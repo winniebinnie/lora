@@ -29,71 +29,51 @@ def _xor_cipher(data: bytes, key: int) -> bytes:
 def _perform_word_handshake(lora):
     global SESSION_KEY
     print("[Sender] Starting Word Handshake.")
-    attempt = 1
+    if lora.send(b"HANDSHAKE_INIT", timeout_ms=5000):
+        print("[Sender] Step 1: Sent HANDSHAKE_INIT message.")
+    else:
+        print("[Sender] Step 1: Failed to send HANDSHAKE_INIT (timeout).")
+        return
 
-    while SESSION_KEY is None:
-        print("[Sender] ==== Handshake attempt {} ====".format(attempt))
+    print("[Sender] Step 2: Waiting for ciphertext response...")
+    payload, rssi, snr = lora.recv(timeout_ms=5000)
+    if payload is None:
+        print("[Sender] Step 2: Did not receive ciphertext (timeout/CRC error).")
+        return
 
-        if lora.send(b"HANDSHAKE_INIT", timeout_ms=15000):
-            print("[Sender] Step 1: Sent HANDSHAKE_INIT message.")
-        else:
-            print("[Sender] Step 1: Failed to send HANDSHAKE_INIT (timeout). Retrying...")
-            attempt += 1
-            time.sleep(2)
-            continue
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeError:
+        print("[Sender] Step 2: Received non-text payload:", payload)
+        return
 
-        print("[Sender] Step 2: Waiting for ciphertext response...")
-        payload, rssi, snr = lora.recv(timeout_ms=15000)
-        if payload is None:
-            print("[Sender] Step 2: Did not receive ciphertext (timeout/CRC error). Retrying...")
-            attempt += 1
-            time.sleep(2)
-            continue
+    print("[Sender] Received response: {} | RSSI: {} dBm | SNR: {} dB".format(text, rssi, snr))
+    if not text.startswith("HANDSHAKE_CIPHERTEXT:"):
+        print("[Sender] Response did not contain expected ciphertext marker.")
+        return
 
+    hex_cipher = text.split(":", 1)[1]
+    try:
+        ciphertext = bytes.fromhex(hex_cipher)
+    except ValueError:
+        print("[Sender] Invalid ciphertext encoding.")
+        return
+
+    print("[Sender] Step 3: Attempting to brute-force RSSI derived key...")
+    for guessed_rssi in range(-120, -19):
+        key = _derive_key_from_rssi(guessed_rssi)
+        plaintext_bytes = _xor_cipher(ciphertext, key)
         try:
-            text = payload.decode("utf-8")
+            candidate = plaintext_bytes.decode("utf-8")
         except UnicodeError:
-            print("[Sender] Step 2: Received non-text payload: {}. Retrying...".format(payload))
-            attempt += 1
-            time.sleep(2)
-            continue
+            candidate = None
+        print("[Sender] Trying RSSI {} (key {}): {}".format(guessed_rssi, key, candidate))
+        if candidate in WORD_LIST:
+            SESSION_KEY = candidate
+            print("[Sender] Step 4: Handshake successful. Session key established:", SESSION_KEY)
+            return
 
-        print("[Sender] Received response: {} | RSSI: {} dBm | SNR: {} dB".format(text, rssi, snr))
-        if not text.startswith("HANDSHAKE_CIPHERTEXT:"):
-            print("[Sender] Response did not contain expected ciphertext marker. Retrying...")
-            attempt += 1
-            time.sleep(2)
-            continue
-
-        hex_cipher = text.split(":", 1)[1]
-        try:
-            ciphertext = bytes.fromhex(hex_cipher)
-        except ValueError:
-            print("[Sender] Invalid ciphertext encoding. Retrying...")
-            attempt += 1
-            time.sleep(2)
-            continue
-
-        print("[Sender] Step 3: Attempting to brute-force RSSI derived key...")
-        for guessed_rssi in range(-120, -19):
-            key = _derive_key_from_rssi(guessed_rssi)
-            plaintext_bytes = _xor_cipher(ciphertext, key)
-            try:
-                candidate = plaintext_bytes.decode("utf-8")
-            except UnicodeError:
-                candidate = None
-            print("[Sender] Trying RSSI {} (key {}): {}".format(guessed_rssi, key, candidate))
-            if candidate in WORD_LIST:
-                SESSION_KEY = candidate
-                print("[Sender] Step 4: Handshake successful. Session key established:", SESSION_KEY)
-                break
-
-        if SESSION_KEY is not None:
-            break
-
-        print("[Sender] Step 4: Failed to determine session key from ciphertext. Retrying...")
-        attempt += 1
-        time.sleep(2)
+    print("[Sender] Step 4: Failed to determine session key from ciphertext.")
 
 
 def main():

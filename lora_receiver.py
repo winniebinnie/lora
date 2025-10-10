@@ -54,15 +54,10 @@ def main():
             ciphertext = _xor_cipher(selected_word.encode("utf-8"), key)
             print("[Receiver] Step 3: Encrypted word to ciphertext:", ciphertext.hex())
             response = "HANDSHAKE_CIPHERTEXT:" + ciphertext.hex()
-            attempt = 1
-            while True:
-                print("[Receiver] Step 4: Sending ciphertext attempt {}...".format(attempt))
-                if lora.send(response.encode("utf-8"), timeout_ms=15000):
-                    print("[Receiver] Step 4: Sent ciphertext back to sender.")
-                    break
-                print("[Receiver] Step 4: Failed to send ciphertext (timeout). Retrying...")
-                attempt += 1
-                time.sleep(2)
+            if lora.send(response.encode("utf-8"), timeout_ms=5000):
+                print("[Receiver] Step 4: Sent ciphertext back to sender.")
+            else:
+                print("[Receiver] Step 4: Failed to send ciphertext (timeout).")
             print("[Receiver] Waiting for next message...")
             continue
 
