@@ -61,6 +61,7 @@ def main():
     lora.set_frequency(int(FREQ_MHZ * 1_000_000))
     lora.set_tx_power(TX_POWER)
     lora.set_spreading_factor(SPREADING_FACTOR)
+    lora.set_tx_power(TX_POWER)
 
     session_key = None
 
@@ -122,6 +123,23 @@ def main():
 
         # Unrecognized frame
         print("RX other:", utf8)
+
+        if text == "HANDSHAKE_INIT":
+            print("[Receiver] Handshake initiated by sender.")
+            selected_word = random.choice(WORD_LIST)
+            print("[Receiver] Step 1: Generated random word:", selected_word)
+            key = _derive_key_from_rssi(rssi)
+            print("[Receiver] Step 2: Derived XOR key from RSSI ({} -> {}).".format(rssi, key))
+            ciphertext = _xor_cipher(selected_word.encode("utf-8"), key)
+            print("[Receiver] Step 3: Encrypted word to ciphertext:", ciphertext.hex())
+            response = "HANDSHAKE_CIPHERTEXT:" + ciphertext.hex()
+            if lora.send(response.encode("utf-8"), timeout_ms=5000):
+                print("[Receiver] Step 4: Sent ciphertext back to sender.")
+            else:
+                print("[Receiver] Step 4: Failed to send ciphertext (timeout).")
+            print("[Receiver] Waiting for next message...")
+            continue
+
 
 if __name__ == "__main__":
     try:
