@@ -1,104 +1,127 @@
-# LoRa receiver for ESP32 + SX1276 (MicroPython) that decrypts the 'message' field
+# lora_receiver.py — RSSI-based dynamic key exchange responder (MicroPython)
 from lora_min import SX1276
-import time
-import ucryptolib
-import ubinascii
+import time, ucryptolib, ubinascii, uhashlib
 
-# === RADIO CONFIG (must match sender) ===
+# --- secure random bytes ---
+try:
+    from os import urandom
+except ImportError:
+    try:
+        from uos import urandom
+    except ImportError:
+        import machine
+        def urandom(n): return bytes(machine.rng() & 0xFF for _ in range(n))
+
+# === RADIO CONFIG ===
 FREQ_MHZ = 915.0
+TX_POWER = 14
 SPREADING_FACTOR = 7
 
-# === CRYPTO CONFIG (same key as sender!) ===
-AES_KEY = b"16-byte-secret!!"  # 16/24/32 bytes for AES-128/192/256
+TAG_BLOCK = b"HSK-OK-ICEWIN!!#"  # must match sender
 
-# --------- Helpers ---------
+# ---------- Helpers ----------
+def q_rssi(rssi_dbm, step=1):
+    return int(round(rssi_dbm / step) * step)
+
+def kdf_from_rssi_and_nonce(q, nonce_bytes):
+    h = uhashlib.sha256(b"RSSI-KDFv1|" + str(q).encode() + b"|" + nonce_bytes)
+    return h.digest()[:16]
+
+def aes_ecb_encrypt(key16, block16_mul):
+    c = ucryptolib.aes(key16, 1)  # ECB
+    return c.encrypt(block16_mul)
+
+def pkcs7_pad(b):
+    pad = 16 - (len(b) % 16)
+    return b + bytes([pad])*pad
+
 def pkcs7_unpad(b):
-    if not b:
-        raise ValueError("Empty plaintext after decrypt")
-    padlen = b[-1]
-    if padlen < 1 or padlen > 16:
-        raise ValueError("Bad padding length")
-    # Check all pad bytes
-    if b[-padlen:] != bytes([padlen]) * padlen:
-        raise ValueError("Bad PKCS#7 padding")
-    return b[:-padlen]
+    pad = b[-1]
+    if pad < 1 or pad > 16 or b[-pad:] != bytes([pad])*pad:
+        raise ValueError("bad PKCS#7 padding")
+    return b[:-pad]
 
-def parse_envelope(text):
-    """
-    Parse 'iv=...,msg=...,counter=...,t=...' into dict.
-    Returns dict with keys: iv (bytes), ct (bytes), counter (int), t (int).
-    """
-    parts = text.split(",")
+def dec_msg_cbc(key16, iv_hex, ct_hex):
+    iv = ubinascii.unhexlify(iv_hex); ct = ubinascii.unhexlify(ct_hex)
+    c = ucryptolib.aes(key16, 2, iv)
+    return pkcs7_unpad(c.decrypt(ct)).decode()
+
+def parse_kvs(text):
     kv = {}
-    for p in parts:
-        if "=" not in p:
-            # tolerate stray spaces/commas
-            continue
-        k, v = p.split("=", 1)
-        kv[k.strip()] = v.strip()
+    for part in text.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            kv[k.strip()] = v.strip()
+    return kv
 
-    # Required fields
-    if "iv" not in kv or "msg" not in kv:
-        raise ValueError("Missing iv/msg in payload")
-
-    # Convert hex -> bytes
-    try:
-        iv = ubinascii.unhexlify(kv["iv"])
-        ct = ubinascii.unhexlify(kv["msg"])
-    except Exception as e:
-        raise ValueError("Hex decode failed: {}".format(e))
-
-    # Optional diagnostics
-    try:
-        counter = int(kv.get("counter", "-1"))
-    except:
-        counter = -1
-    try:
-        t = int(kv.get("t", "-1"))
-    except:
-        t = -1
-
-    return {"iv": iv, "ct": ct, "counter": counter, "t": t}
-
-def decrypt_message(iv, ct):
-    cipher = ucryptolib.aes(AES_KEY, 2, iv)  # 2 == CBC mode
-    pt_padded = cipher.decrypt(ct)
-    pt = pkcs7_unpad(pt_padded)
-    return pt.decode("utf-8")
-
-# --------- Main ---------
+# ---------- Main ----------
 def main():
-    print("LoRa receiver starting...")
+    print("Receiver: starting (RSSI-based handshake)")
     lora = SX1276(sck=18, mosi=23, miso=19, cs=5, rst=17)
     lora.set_frequency(int(FREQ_MHZ * 1_000_000))
+    lora.set_tx_power(TX_POWER)
     lora.set_spreading_factor(SPREADING_FACTOR)
 
+    session_key = None
+
     while True:
+        # Always listen
         payload, rssi, snr = lora.recv(timeout_ms=0)  # wait forever
         if payload is None:
             print("RX error/CRC")
             continue
 
-        # Try to decode and decrypt
+        utf8 = None
         try:
-            text = payload.decode("utf-8")
+            utf8 = payload.decode()
         except UnicodeError:
-            # If not utf-8, show raw and continue
-            print("RX (non-UTF8):", payload, "| RSSI:", rssi, "dBm | SNR:", snr, "dB")
+            print("RX non-utf8:", ubinascii.hexlify(payload))
             continue
 
-        try:
-            env = parse_envelope(text)
-            msg_clear = decrypt_message(env["iv"], env["ct"])
-            print(
-                "RX OK | msg='{}' | counter={} | t={} | RSSI={} dBm | SNR={} dB".format(
-                    msg_clear, env["counter"], env["t"], rssi, snr
-                )
-            )
-        except Exception as e:
-            # If parsing/decryption failed, still show what we got for debugging
-            print("RX PARSE/DECRYPT ERROR:", e)
-            print("RAW:", text, "| RSSI:", rssi, "dBm | SNR:", snr, "dB")
+        kv = parse_kvs(utf8)
+
+        # ---- Handshake HELLO ----
+        if kv.get("hello") == "1" and "nonce" in kv:
+            nonce_hex = kv["nonce"]
+            try:
+                nonce = ubinascii.unhexlify(nonce_hex)
+            except Exception:
+                print("Bad nonce hex")
+                continue
+
+            # Derive wrapping key from MEASURED HELLO RSSI
+            q = q_rssi(int(rssi))
+            K = kdf_from_rssi_and_nonce(q, nonce)
+
+            # Fresh session key (16B)
+            session_key = urandom(16)
+
+            # Encrypt two blocks: SESSION_KEY || TAG_BLOCK with AES-ECB(K)
+            pt = session_key + TAG_BLOCK
+            ek = aes_ecb_encrypt(K, pt)
+            ek_hex = ubinascii.hexlify(ek).decode()
+
+            reply = "ek={},nonce={}".format(ek_hex, nonce_hex)
+            ok = lora.send(reply.encode(), timeout_ms=5000)
+            if ok:
+                print("TX key reply ok | q={} | RSSI_hello={} dBm".format(q, rssi))
+            else:
+                print("TX key reply timeout")
+            # Continue listening for data frames
+            continue
+
+        # ---- Data frames (after handshake) ----
+        if session_key and kv.get("kind") == "data" and "iv" in kv and "msg" in kv:
+            try:
+                clear = dec_msg_cbc(session_key, kv["iv"], kv["msg"])
+                print("RX data | msg='{}' | ctr={} | t={} | RSSI={} SNR={}".format(
+                    clear, kv.get("counter", "?"), kv.get("t", "?"), rssi, snr))
+            except Exception as e:
+                print("Data decrypt error:", e)
+            continue
+
+        # Unrecognized frame
+        print("RX other:", utf8)
 
 if __name__ == "__main__":
     try:
