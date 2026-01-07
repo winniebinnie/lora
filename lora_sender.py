@@ -12,79 +12,60 @@ except ImportError:
         import machine
         def urandom(n): return bytes(machine.rng() & 0xFF for _ in range(n))
 
-
 # === RADIO CONFIG (non-FHSS params) ===
 TX_POWER = 14
 SPREADING_FACTOR = 7
 
 # === FHSS CONFIG (MUST MATCH RECEIVER) ===
-FREQ_TABLE_MHZ = [
-    914.0,
-    914.3,
-    914.6,
-    914.9,
-    915.2,
-    915.5,
-    915.8,
-    916.1,
-]
-HOP_INTERVAL_MS = 10000           # hop every 1s (ปรับตาม airtime ได้)
-SECRET_SEED     = 0x1234ABCD     # pseudo-random seed (ต้องเหมือนฝั่ง RX)
+FREQ_TABLE_MHZ = [914.0, 914.3, 914.6, 914.9, 915.2, 915.5, 915.8, 916.1]
+HOP_INTERVAL_MS = 10000          # hop every 10 seconds
+SECRET_SEED     = 0x1234ABCD     # must match RX
 
+# Guard so we don't miss frames around slot edges
+HOP_GUARD_MS = 250               # tune 100–500ms depending on your timing
+
+# === RSSI / BRUTEFORCE TUNING ===
+RSSI_WINDOW_DB = 8
+RSSI_STEP_DB   = 1
+TAG_BLOCK      = b"HSK-OK-ICEWIN!!#"  # must match RX (16 bytes)
 
 def _prn_from_slot(slot):
-    # simple 32-bit LCG based on SECRET_SEED ^ slot
     x = (SECRET_SEED ^ slot) & 0xFFFFFFFF
     x = (1103515245 * x + 12345) & 0x7FFFFFFF
     return x
 
+def hop_freq_for_slot(slot):
+    prn = _prn_from_slot(slot)
+    idx = prn % len(FREQ_TABLE_MHZ)
+    return FREQ_TABLE_MHZ[idx]
 
-def get_hop_frequency():
-    slot = time.ticks_ms() // HOP_INTERVAL_MS
-    prn  = _prn_from_slot(slot)
-    idx  = prn % len(FREQ_TABLE_MHZ)
-    return FREQ_TABLE_MHZ[idx], slot
+def current_slot():
+    return time.ticks_ms() // HOP_INTERVAL_MS
 
+def set_freq_for_slot(lora, slot):
+    f = hop_freq_for_slot(slot)
+    lora.set_frequency(int(f * 1_000_000))
+    return f
 
-def set_hop_frequency(lora):
-    """คำนวณความถี่ตาม slot ปัจจุบันแล้ว set เข้า radio"""
-    freq_mhz, slot = get_hop_frequency()
-    lora.set_frequency(int(freq_mhz * 1_000_000))
-    return freq_mhz, slot
+def time_left_in_slot_ms():
+    now = time.ticks_ms()
+    elapsed = now % HOP_INTERVAL_MS
+    return HOP_INTERVAL_MS - elapsed
 
-
-# === RSSI / BRUTEFORCE TUNING ===
-RSSI_WINDOW_DB = 8   # +/- dB around measured reply RSSI
-RSSI_STEP_DB   = 1   # step in dB
-TAG_BLOCK      = b"HSK-OK-ICEWIN!!#"  # 16-byte constant check block
-
-
-# ---------- Helpers ----------
 def q_rssi(rssi_dbm, step=1):
-    # Quantize RSSI (e.g., -73.4 -> -73 for step=1)
     return int(round(rssi_dbm / step) * step)
 
-
 def kdf_from_rssi_and_nonce(q, nonce_bytes):
-    # K = SHA256("RSSI-KDFv1|" + str(q) + "|" + nonce), take 16 bytes
     h = uhashlib.sha256(b"RSSI-KDFv1|" + str(q).encode() + b"|" + nonce_bytes)
     return h.digest()[:16]
 
-
-def aes_ecb_encrypt(key16, block16_mul):
-    c = ucryptolib.aes(key16, 1)  # 1 == ECB
-    return c.encrypt(block16_mul)
-
-
 def aes_ecb_decrypt(key16, ct):
-    c = ucryptolib.aes(key16, 1)
+    c = ucryptolib.aes(key16, 1)  # ECB
     return c.decrypt(ct)
-
 
 def pkcs7_pad(b):
     pad = 16 - (len(b) % 16)
     return b + bytes([pad]) * pad
-
 
 def pkcs7_unpad(b):
     pad = b[-1]
@@ -92,20 +73,11 @@ def pkcs7_unpad(b):
         raise ValueError("bad PKCS#7 padding")
     return b[:-pad]
 
-
 def enc_msg_cbc(key16, msg_str):
     iv = urandom(16)
     c = ucryptolib.aes(key16, 2, iv)  # CBC
     ct = c.encrypt(pkcs7_pad(msg_str.encode()))
     return ubinascii.hexlify(iv).decode(), ubinascii.hexlify(ct).decode()
-
-
-def dec_msg_cbc(key16, iv_hex, ct_hex):
-    iv = ubinascii.unhexlify(iv_hex)
-    ct = ubinascii.unhexlify(ct_hex)
-    c = ucryptolib.aes(key16, 2, iv)
-    return pkcs7_unpad(c.decrypt(ct)).decode()
-
 
 def parse_kvs(text):
     kv = {}
@@ -115,17 +87,11 @@ def parse_kvs(text):
             kv[k.strip()] = v.strip()
     return kv
 
-
 def derive_msg_key(master_key, counter):
-    """
-    Derive per-message AES key from master session_key + counter.
-    """
     b_ctr = struct.pack(">I", counter & 0xFFFFFFFF)
     h = uhashlib.sha256(b"MSG-KDF-v1|" + master_key + b"|" + b_ctr)
-    return h.digest()[:16]   # 16-byte key
+    return h.digest()[:16]
 
-
-# Try unwrap SESSION_KEY by brute forcing q around measured RSSI of reply
 def unwrap_session_key_bruteforce(ek_hex, nonce_hex, rssi_reply_dbm):
     ek = ubinascii.unhexlify(ek_hex)
     nonce = ubinascii.unhexlify(nonce_hex)
@@ -135,27 +101,24 @@ def unwrap_session_key_bruteforce(ek_hex, nonce_hex, rssi_reply_dbm):
         rssi_reply_dbm, RSSI_WINDOW_DB, RSSI_STEP_DB
     ))
 
-    # We encrypted two 16B blocks: SESSION_KEY(16) || TAG(16)
     for dq in range(-RSSI_WINDOW_DB, RSSI_WINDOW_DB + 1, RSSI_STEP_DB):
         q = q_rssi(rssi_reply_dbm + dq)
         K = kdf_from_rssi_and_nonce(q, nonce)
         try:
-            pt = aes_ecb_decrypt(K, ek)  # expected length 32
+            pt = aes_ecb_decrypt(K, ek)  # expected 32 bytes
             if len(pt) != 32:
                 continue
             sess = pt[:16]
             tag  = pt[16:32]
             if tag == TAG_BLOCK:
                 print("[STEP 5] Alice: found matching TAG_BLOCK at q={}".format(q))
-                return sess, q  # success
+                return sess, q
         except Exception:
             pass
 
     print("[STEP 5] Alice: FAILED to find correct key in window")
     return None, None
 
-
-# ---------- Main ----------
 def main():
     print("Sender: starting (RSSI-based handshake + FHSS + per-message key)")
     print("FHSS freq table:", FREQ_TABLE_MHZ)
@@ -165,47 +128,46 @@ def main():
     lora.set_tx_power(TX_POWER)
     lora.set_spreading_factor(SPREADING_FACTOR)
 
-    # ตั้งความถี่เริ่มต้นตาม FHSS
-    freq_mhz, slot = set_hop_frequency(lora)
-    print("Initial hop freq = %.3f MHz (slot=%d)" % (freq_mhz, slot))
+    slot0 = current_slot()
+    f0 = set_freq_for_slot(lora, slot0)
+    print("Initial hop freq = %.3f MHz (slot=%d)" % (f0, slot0))
 
     session_key = None
     counter = 0
-    message = "IceWin"
+    message = "HELLLLLLLOOOOOOOO"
 
     while True:
-        # If no session key yet, run handshake
+        # --- Handshake ---
         if session_key is None:
             nonce = urandom(8)
             nonce_hex = ubinascii.hexlify(nonce).decode()
             hello = "hello=1,nonce={}".format(nonce_hex)
 
-            # hop ก่อนส่งทุกครั้ง
-            freq_mhz, slot = set_hop_frequency(lora)
-            ok = lora.send(hello.encode(), timeout_ms=5000)
+            # Pin to ONE slot for HELLO + waiting reply
+            slot = current_slot()
+            freq = set_freq_for_slot(lora, slot)
+
+            ok = lora.send(hello.encode(), timeout_ms=1500)
             if ok:
-                # STEP 1 – Alice sends HELLO
-                print("[STEP 1] Alice: sent HELLO on %.3f MHz slot=%d" %
-                      (freq_mhz, slot))
+                print("[STEP 1] Alice: sent HELLO on %.3f MHz slot=%d" % (freq, slot))
                 print("          nonce={}".format(nonce_hex))
             else:
-                print("Alice: TX HELLO timeout on %.3f MHz slot=%d" %
-                      (freq_mhz, slot))
-                time.sleep(1)
+                print("Alice: TX HELLO timeout on %.3f MHz slot=%d" % (freq, slot))
+                time.sleep_ms(200)
                 continue
 
-            # Wait for KEY reply (บนความถี่ตาม hop ปัจจุบัน)
-            freq_mhz, slot = set_hop_frequency(lora)
-            rx, rssi, snr = lora.recv(timeout_ms=HOP_INTERVAL_MS + 500)
+            # Wait only until slot ends (plus guard), still on same freq/slot
+            timeout_ms = time_left_in_slot_ms() + HOP_GUARD_MS
+            rx, rssi, snr = lora.recv(timeout_ms=timeout_ms)
+
             if rx is None:
-                print("Alice: No key reply; retrying handshake (freq=%.3f slot=%d)" %
-                      (freq_mhz, slot))
-                time.sleep(1)
+                print("Alice: No key reply; retrying handshake (freq=%.3f slot=%d)" % (freq, slot))
+                time.sleep_ms(200)
                 continue
 
             print("[STEP 4] Alice: got key reply frame")
-            print("          RSSI_reply={} dBm | SNR={} | freq=%.3f MHz slot=%d".format(
-                rssi, snr, freq_mhz, slot
+            print("          RSSI_reply={} dBm | SNR={} | freq={:.3f} MHz slot={}".format(
+                rssi, snr, freq, slot
             ))
 
             try:
@@ -213,9 +175,9 @@ def main():
                 kv = parse_kvs(text)
                 print("Alice: raw key reply =", text)
 
-                if kv.get("hello") or "ek" not in kv or "nonce" not in kv:
-                    print("Alice: Unexpected reply, missing ek/nonce or contains hello")
-                    time.sleep(1)
+                if "ek" not in kv or "nonce" not in kv:
+                    print("Alice: Unexpected reply, missing ek/nonce")
+                    time.sleep_ms(200)
                     continue
 
                 if kv["nonce"] != nonce_hex:
@@ -223,55 +185,47 @@ def main():
                     print("        expected={} got={}".format(nonce_hex, kv["nonce"]))
                     continue
 
-                # Brute-force q around measured reply RSSI
                 session_key, q_found = unwrap_session_key_bruteforce(
                     kv["ek"], kv["nonce"], rssi_reply_dbm=int(rssi)
                 )
                 if session_key:
                     print("[STEP 5] Alice: handshake OK")
                     print("          q_found={} | RSSI_reply={} dBm".format(q_found, rssi))
-                    print("          SESSION_KEY = {}".format(
-                        ubinascii.hexlify(session_key)
-                    ))
+                    print("          SESSION_KEY = {}".format(ubinascii.hexlify(session_key)))
                 else:
                     print("Alice: Handshake FAILED (window={} dB)".format(RSSI_WINDOW_DB))
-                    time.sleep(1)
+                    time.sleep_ms(200)
                     continue
+
             except Exception as e:
                 print("Alice: Key reply parse/decrypt error:", e)
-                time.sleep(1)
+                time.sleep_ms(200)
                 continue
 
-        # --- We have a master session key: derive per-message key from counter ---
+        # --- Secure data ---
         msg_key = derive_msg_key(session_key, counter)
-        msg_key_hex = ubinascii.hexlify(msg_key).decode()
-        print("[STEP 7] Alice: per-message key derived "
-              "(ctr={}): K_msg={}".format(counter, msg_key_hex))
+        print("[STEP 7] Alice: per-message key derived (ctr={}): K_msg={}".format(
+            counter, ubinascii.hexlify(msg_key).decode()
+        ))
 
         iv_hex, ct_hex = enc_msg_cbc(msg_key, message)
         t_ms = time.ticks_ms()
-
         payload = "iv={},msg={},counter={},t={},kind=data".format(
             iv_hex, ct_hex, counter, t_ms
         )
 
-        # hop ก่อนส่ง data ทุกครั้ง
-        freq_mhz, slot = set_hop_frequency(lora)
-        ok = lora.send(payload.encode(), timeout_ms=5000)
+        slot = current_slot()
+        freq = set_freq_for_slot(lora, slot)
+        ok = lora.send(payload.encode(), timeout_ms=1500)
         if ok:
-            # STEP 6 – Alice uses established secure session
-            print("[STEP 6] Alice: TX secure data ok "
-                  "(ctr={} t={} freq={:.3f} slot={})".format(
-                      counter, t_ms, freq_mhz, slot
-                  ))
-        else:
-            print("Alice: TX data timeout on freq={:.3f} slot={}".format(
-                freq_mhz, slot
+            print("[STEP 6] Alice: TX secure data ok (ctr={} t={} freq={:.3f} slot={})".format(
+                counter, t_ms, freq, slot
             ))
+        else:
+            print("Alice: TX data timeout on freq={:.3f} slot={}".format(freq, slot))
 
         counter += 1
         time.sleep(2)
-
 
 if __name__ == "__main__":
     try:
