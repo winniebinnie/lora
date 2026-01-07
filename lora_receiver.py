@@ -12,69 +12,54 @@ except ImportError:
         import machine
         def urandom(n): return bytes(machine.rng() & 0xFF for _ in range(n))
 
-
 # === RADIO CONFIG (non-FHSS params) ===
 TX_POWER = 14
 SPREADING_FACTOR = 7
 
 # === FHSS CONFIG (MUST MATCH SENDER) ===
-FREQ_TABLE_MHZ = [
-    914.0,
-    914.3,
-    914.6,
-    914.9,
-    915.2,
-    915.5,
-    915.8,
-    916.1,
-]
+FREQ_TABLE_MHZ = [914.0, 914.3, 914.6, 914.9, 915.2, 915.5, 915.8, 916.1]
 HOP_INTERVAL_MS = 10000
 SECRET_SEED     = 0x1234ABCD
 
+# Guard so we don't miss frames around slot edges
+HOP_GUARD_MS = 250   # tune 100–500ms
+
+TAG_BLOCK = b"HSK-OK-ICEWIN!!#"  # must match sender (16 bytes)
 
 def _prn_from_slot(slot):
     x = (SECRET_SEED ^ slot) & 0xFFFFFFFF
     x = (1103515245 * x + 12345) & 0x7FFFFFFF
     return x
 
+def hop_freq_for_slot(slot):
+    prn = _prn_from_slot(slot)
+    idx = prn % len(FREQ_TABLE_MHZ)
+    return FREQ_TABLE_MHZ[idx]
 
-def get_hop_frequency():
-    slot = time.ticks_ms() // HOP_INTERVAL_MS
-    prn  = _prn_from_slot(slot)
-    idx  = prn % len(FREQ_TABLE_MHZ)
-    return FREQ_TABLE_MHZ[idx], slot
+def current_slot():
+    return time.ticks_ms() // HOP_INTERVAL_MS
 
+def set_freq_for_slot(lora, slot):
+    f = hop_freq_for_slot(slot)
+    lora.set_frequency(int(f * 1_000_000))
+    return f
 
-def set_hop_frequency(lora):
-    freq_mhz, slot = get_hop_frequency()
-    lora.set_frequency(int(freq_mhz * 1_000_000))
-    return freq_mhz, slot
-
-
-TAG_BLOCK = b"HSK-OK-ICEWIN!!#"  # must match sender
-
+def time_left_in_slot_ms():
+    now = time.ticks_ms()
+    elapsed = now % HOP_INTERVAL_MS
+    return HOP_INTERVAL_MS - elapsed
 
 # ---------- Helpers ----------
 def q_rssi(rssi_dbm, step=1):
-    # Quantize RSSI (e.g., -73.4 -> -73 for step=1)
     return int(round(rssi_dbm / step) * step)
 
-
 def kdf_from_rssi_and_nonce(q, nonce_bytes):
-    # K = SHA256("RSSI-KDFv1|" + str(q) + "|" + nonce), take 16 bytes
     h = uhashlib.sha256(b"RSSI-KDFv1|" + str(q).encode() + b"|" + nonce_bytes)
     return h.digest()[:16]
-
 
 def aes_ecb_encrypt(key16, block16_mul):
     c = ucryptolib.aes(key16, 1)  # ECB
     return c.encrypt(block16_mul)
-
-
-def pkcs7_pad(b):
-    pad = 16 - (len(b) % 16)
-    return b + bytes([pad]) * pad
-
 
 def pkcs7_unpad(b):
     pad = b[-1]
@@ -82,13 +67,11 @@ def pkcs7_unpad(b):
         raise ValueError("bad PKCS#7 padding")
     return b[:-pad]
 
-
 def dec_msg_cbc(key16, iv_hex, ct_hex):
     iv = ubinascii.unhexlify(iv_hex)
     ct = ubinascii.unhexlify(ct_hex)
     c = ucryptolib.aes(key16, 2, iv)  # CBC
     return pkcs7_unpad(c.decrypt(ct)).decode()
-
 
 def parse_kvs(text):
     kv = {}
@@ -98,15 +81,10 @@ def parse_kvs(text):
             kv[k.strip()] = v.strip()
     return kv
 
-
 def derive_msg_key(master_key, counter):
-    """
-    Derive per-message AES key from master session_key + counter.
-    """
     b_ctr = struct.pack(">I", counter & 0xFFFFFFFF)
     h = uhashlib.sha256(b"MSG-KDF-v1|" + master_key + b"|" + b_ctr)
     return h.digest()[:16]
-
 
 # ---------- Main ----------
 def main():
@@ -118,34 +96,36 @@ def main():
     lora.set_tx_power(TX_POWER)
     lora.set_spreading_factor(SPREADING_FACTOR)
 
-    freq_mhz, slot = set_hop_frequency(lora)
-    print("Initial hop freq = %.3f MHz (slot=%d)" % (freq_mhz, slot))
+    slot0 = current_slot()
+    f0 = set_freq_for_slot(lora, slot0)
+    print("Initial hop freq = %.3f MHz (slot=%d)" % (f0, slot0))
 
     session_key = None
 
     while True:
-        # hop ก่อนรับทุกครั้ง
-        freq_mhz, slot = set_hop_frequency(lora)
-        payload, rssi, snr = lora.recv(timeout_ms=HOP_INTERVAL_MS + 500)
+        # Pin RX to current slot, and only listen until slot ends (+ guard)
+        slot = current_slot()
+        freq = set_freq_for_slot(lora, slot)
+        timeout_ms = time_left_in_slot_ms() + HOP_GUARD_MS
+
+        payload, rssi, snr = lora.recv(timeout_ms=timeout_ms)
         if payload is None:
-            print("Bob: RX timeout/CRC on freq=%.3f MHz slot=%d" %
-                  (freq_mhz, slot))
+            print("Bob: RX timeout/CRC on freq=%.3f MHz slot=%d" % (freq, slot))
             continue
 
         try:
             utf8 = payload.decode()
         except UnicodeError:
-            print("Bob: RX non-utf8 frame on freq=%.3f slot=%d: %s" %
-                  (freq_mhz, slot, ubinascii.hexlify(payload)))
+            print("Bob: RX non-utf8 frame on freq=%.3f slot=%d: %s" % (
+                freq, slot, ubinascii.hexlify(payload)
+            ))
             continue
 
         kv = parse_kvs(utf8)
 
         # ---- Handshake HELLO ----
         if kv.get("hello") == "1" and "nonce" in kv:
-            # STEP 2 – Bob receives HELLO and measures RSSI
-            print("[STEP 2] Bob: HELLO received on freq=%.3f slot=%d" %
-                  (freq_mhz, slot))
+            print("[STEP 2] Bob: HELLO received on freq=%.3f slot=%d" % (freq, slot))
             print("          raw_frame='{}'".format(utf8))
             print("          RSSI_hello={} dBm | SNR={}".format(rssi, snr))
 
@@ -156,39 +136,33 @@ def main():
                 print("Bob: Bad nonce hex in HELLO")
                 continue
 
-            # Derive wrapping key from measured HELLO RSSI
             q = q_rssi(int(rssi))
             K = kdf_from_rssi_and_nonce(q, nonce)
             print("[STEP 3] Bob: derived wrapping key K from RSSI")
             print("          q={} (quantized RSSI) | nonce={}".format(q, nonce_hex))
 
-            # Fresh session key (16B)
             session_key = urandom(16)
             print("[STEP 3] Bob: generated SESSION_KEY = {}".format(
                 ubinascii.hexlify(session_key)
             ))
 
-            # Encrypt two blocks: SESSION_KEY || TAG_BLOCK with AES-ECB(K)
+            # Encrypt SESSION_KEY || TAG_BLOCK with AES-ECB(K)
             pt = session_key + TAG_BLOCK
             ek = aes_ecb_encrypt(K, pt)
             ek_hex = ubinascii.hexlify(ek).decode()
-
             reply = "ek={},nonce={}".format(ek_hex, nonce_hex)
 
-            # hop ก่อนส่ง reply (ใช้ช่องตาม slot ปัจจุบัน)
-            freq_mhz, slot = set_hop_frequency(lora)
-            ok = lora.send(reply.encode(), timeout_ms=5000)
+            # IMPORTANT: send reply on SAME slot/freq we received HELLO on
+            ok = lora.send(reply.encode(), timeout_ms=1500)
             if ok:
-                print("[STEP 3] Bob: sent encrypted SESSION_KEY reply "
-                      "on freq=%.3f slot=%d" % (freq_mhz, slot))
+                print("[STEP 3] Bob: sent encrypted SESSION_KEY reply on freq=%.3f slot=%d" % (freq, slot))
                 print("          ek_len={} hex chars".format(len(ek_hex)))
             else:
-                print("Bob: TX key reply timeout on freq=%.3f slot=%d" %
-                      (freq_mhz, slot))
+                print("Bob: TX key reply timeout on freq=%.3f slot=%d" % (freq, slot))
 
             continue
 
-        # ---- Data frames (after handshake) ----
+        # ---- Data frames ----
         if session_key and kv.get("kind") == "data" and "iv" in kv and "msg" in kv:
             try:
                 ctr_str = kv.get("counter", None)
@@ -202,16 +176,13 @@ def main():
                     print("Bob: bad counter format:", ctr_str)
                     continue
 
-                # derive per-message key จาก master session_key + counter
                 msg_key = derive_msg_key(session_key, ctr)
-                msg_key_hex = ubinascii.hexlify(msg_key).decode()
-                print("[STEP 7] Bob: per-message key derived "
-                      "(ctr={}): K_msg={}".format(ctr, msg_key_hex))
+                print("[STEP 7] Bob: per-message key derived (ctr={}): K_msg={}".format(
+                    ctr, ubinascii.hexlify(msg_key).decode()
+                ))
 
                 clear = dec_msg_cbc(msg_key, kv["iv"], kv["msg"])
-                # STEP 6 – Bob uses established secure session
-                print("[STEP 6] Bob: RX secure data on freq=%.3f slot=%d" %
-                      (freq_mhz, slot))
+                print("[STEP 6] Bob: RX secure data on freq=%.3f slot=%d" % (freq, slot))
                 print("          msg='{}' | ctr={} | t={} | RSSI={} | SNR={}".format(
                     clear, ctr, kv.get("t", "?"), rssi, snr
                 ))
@@ -219,10 +190,7 @@ def main():
                 print("Bob: Data decrypt error:", e)
             continue
 
-        # Unrecognized frame
-        print("Bob: RX other frame on freq=%.3f slot=%d: %s" %
-              (freq_mhz, slot, utf8))
-
+        print("Bob: RX other frame on freq=%.3f slot=%d: %s" % (freq, slot, utf8))
 
 if __name__ == "__main__":
     try:
