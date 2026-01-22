@@ -136,6 +136,15 @@ def main():
     counter = 0
     message = "HELLLLLLLOOOOOOOO"
 
+    # --- CHIRP TX EXPERIMENT (comment out when not testing) ---
+    from chirp_experiment import build_freq_list, chirp_sender_countdown_sync_and_tx
+    base_freq = 915.0
+    freqs = build_freq_list(914.0, 916.1, step_khz=50)
+
+    chirp_sender_countdown_sync_and_tx(lora, base_freq, freqs, window_ms=1200)
+    return
+    # ----------------------------------------------------------
+
     while True:
         # --- Handshake ---
         if session_key is None:

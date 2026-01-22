@@ -1,6 +1,10 @@
 # lora_receiver.py — RSSI-based dynamic key exchange responder + FHSS + per-message key (MicroPython)
 from lora_min import SX1276
 import time, ucryptolib, ubinascii, uhashlib, struct
+import bench_crypto
+
+# run benchmarks once at startup
+# bench_crypto.run_all()
 
 # --- secure random bytes ---
 try:
@@ -101,6 +105,16 @@ def main():
     print("Initial hop freq = %.3f MHz (slot=%d)" % (f0, slot0))
 
     session_key = None
+
+    # --- CHIRP RX SCAN EXPERIMENT (comment out when not testing) ---
+    from chirp_experiment import build_freq_list, chirp_receiver_wait_then_scan
+    base_freq = 915.0
+    freqs = build_freq_list(914.0, 916.1, step_khz=50)
+
+    chirp_receiver_wait_then_scan(lora, base_freq, freqs, window_ms=1200)
+    return
+    # --------------------------------------------------------------
+
 
     while True:
         # Pin RX to current slot, and only listen until slot ends (+ guard)
