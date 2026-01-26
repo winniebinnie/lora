@@ -224,3 +224,67 @@ class SX1276:
             if timeout_ms and time.ticks_diff(time.ticks_ms(), t0) > timeout_ms:
                 self.standby()
                 return (None, None, None)
+    
+    # BW/CR/CRC helpers for CSS
+
+    def set_bandwidth(self, bw_hz=125000):
+        # REG_MODEM_CONFIG1 bits 7:4
+        # 125k=0x70, 250k=0x80, 500k=0x90 (SX1276 common set)
+        bw_map = {
+            125000: 0x70,
+            250000: 0x80,
+            500000: 0x90,
+        }
+        if bw_hz not in bw_map:
+            raise ValueError("Unsupported BW: %s (use 125000/250000/500000)" % bw_hz)
+
+        mc1 = self._read_reg(self.REG_MODEM_CONFIG1)
+        mc1 = (mc1 & 0x0F) | bw_map[bw_hz]   # keep low nibble, set BW
+        self._write_reg(self.REG_MODEM_CONFIG1, mc1)
+
+        # Update LowDataRateOptimize based on Tsym > 16ms rule-of-thumb
+        self._update_ldro()
+
+    def set_coding_rate(self, cr=5):
+        # LoRa CR is 4/5..4/8, encode into REG_MODEM_CONFIG1 bits 3:1
+        # CR=5 -> 0x02, 6 -> 0x04, 7 -> 0x06, 8 -> 0x08
+        cr_map = {5: 0x02, 6: 0x04, 7: 0x06, 8: 0x08}
+        if cr not in cr_map:
+            raise ValueError("Unsupported CR: %s (use 5..8 meaning 4/5..4/8)" % cr)
+
+        mc1 = self._read_reg(self.REG_MODEM_CONFIG1)
+        mc1 = (mc1 & 0xF1) | cr_map[cr]      # keep BW + header bit, set CR bits
+        self._write_reg(self.REG_MODEM_CONFIG1, mc1)
+
+    def set_crc(self, enable=True):
+        mc2 = self._read_reg(self.REG_MODEM_CONFIG2)
+        if enable:
+            mc2 |= 0x04  # RxPayloadCrcOn
+        else:
+            mc2 &= ~0x04
+        self._write_reg(self.REG_MODEM_CONFIG2, mc2)
+
+    def _get_bw_hz(self):
+        mc1 = self._read_reg(self.REG_MODEM_CONFIG1)
+        bw_nibble = mc1 & 0xF0
+        if bw_nibble == 0x70: return 125000
+        if bw_nibble == 0x80: return 250000
+        if bw_nibble == 0x90: return 500000
+        return 125000  # fallback
+
+    def _get_sf(self):
+        mc2 = self._read_reg(self.REG_MODEM_CONFIG2)
+        return (mc2 >> 4) & 0x0F
+
+    def _update_ldro(self):
+        # Enable LowDataRateOptimize if Tsym > ~16ms
+        bw = self._get_bw_hz()
+        sf = self._get_sf()
+        tsym_ms = ( (1 << sf) * 1000 ) / bw
+
+        mc3 = self._read_reg(self.REG_MODEM_CONFIG3)
+        if tsym_ms > 16:
+            mc3 |= 0x08
+        else:
+            mc3 &= ~0x08
+        self._write_reg(self.REG_MODEM_CONFIG3, mc3)

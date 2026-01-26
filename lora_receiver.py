@@ -21,8 +21,8 @@ TX_POWER = 14
 SPREADING_FACTOR = 7
 
 # === FHSS CONFIG (MUST MATCH SENDER) ===
-FREQ_TABLE_MHZ = [914.0, 914.3, 914.6, 914.9, 915.2, 915.5, 915.8, 916.1]
-HOP_INTERVAL_MS = 10000
+FREQ_TABLE_MHZ = [920.6, 920.8, 921.0, 921.2, 921.4, 921.6, 923.2, 923.4]
+HOP_INTERVAL_MS = 400
 SECRET_SEED     = 0x1234ABCD
 
 # Guard so we don't miss frames around slot edges
@@ -99,6 +99,11 @@ def main():
     lora = SX1276(sck=18, mosi=23, miso=19, cs=5, rst=17)
     lora.set_tx_power(TX_POWER)
     lora.set_spreading_factor(SPREADING_FACTOR)
+    
+    lora.set_bandwidth(500000)     # fast chirps
+    lora.set_spreading_factor(7)   # faster than SF10/11/12
+    lora.set_coding_rate(5)        # 4/5 fastest coding
+    lora.set_crc(True)
 
     slot0 = current_slot()
     f0 = set_freq_for_slot(lora, slot0)
@@ -108,8 +113,8 @@ def main():
 
     # --- CHIRP RX SCAN EXPERIMENT (comment out when not testing) ---
     from chirp_experiment import build_freq_list, chirp_receiver_wait_then_scan
-    base_freq = 915.0
-    freqs = build_freq_list(914.0, 916.1, step_khz=50)
+    base_freq = 923.2
+    freqs = build_freq_list(920.6, 923.4, step_khz=100)  # fewer points = faster scan
 
     chirp_receiver_wait_then_scan(lora, base_freq, freqs, window_ms=1200)
     return
@@ -211,4 +216,5 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("Receiver stopped.")
+
 

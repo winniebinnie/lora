@@ -60,10 +60,10 @@ def chirp_sender_countdown_sync_and_tx(
     lora,
     base_freq_mhz,
     freqs_mhz,
-    start_delay_ms=12000,
-    announce_interval_ms=250,
-    window_ms=800,              # longer per-frequency window
-    beacon_interval_ms=80,      # send beacons repeatedly within window
+    start_delay_ms=3000,
+    announce_interval_ms=150,
+    window_ms=200,              # longer per-frequency window
+    beacon_interval_ms=25,      # send beacons repeatedly within window
     tx_timeout_ms=1500,
     print_live=True
 ):
@@ -114,10 +114,10 @@ def chirp_receiver_wait_then_scan(
     freqs_mhz,
     wait_timeout_ms=0,
     settle_ms=12,
-    window_ms=800,              # match TX window_ms
-    listen_chunk_ms=120,
+    window_ms=200,              # match TX window_ms
+    listen_chunk_ms=60,
     default_rssi_dbm=-200,
-    aggregator="max",           # "max" or "avg"
+    aggregator="avg",           # "max" or "avg"
     save_path="rssi_scan.csv",
     print_live=True
 ):
@@ -174,7 +174,7 @@ def chirp_receiver_wait_then_scan(
 
             if pkt is not None and pkt.startswith(CHIRP_BEACON_PREFIX):
                 try:
-                    rssis.append(int(rssi))
+                    rssis.append(float(rssi))
                 except:
                     pass
                 try:
@@ -183,7 +183,7 @@ def chirp_receiver_wait_then_scan(
                     pass
 
         if rssis:
-            rssi_out = int(sum(rssis) / len(rssis)) if aggregator == "avg" else max(rssis)
+            rssi_out = (sum(rssis)/len(rssis)) if aggregator == "avg" else max(rssis)
         else:
             rssi_out = default_rssi_dbm
 
