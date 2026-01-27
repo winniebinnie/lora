@@ -128,7 +128,7 @@ def main():
     lora.set_tx_power(TX_POWER)
     lora.set_spreading_factor(SPREADING_FACTOR)
 
-    lora.set_bandwidth(500000)     # fast chirps
+    lora.set_bandwidth(125000)     # fast chirps
     lora.set_spreading_factor(7)   # faster than SF10/11/12
     lora.set_coding_rate(5)        # 4/5 fastest coding
     lora.set_crc(True)
@@ -145,9 +145,9 @@ def main():
     # --- CHIRP TX EXPERIMENT (comment out when not testing) ---
     from chirp_experiment import build_freq_list, chirp_sender_countdown_sync_and_tx
     base_freq = 923.2
-    freqs = build_freq_list(920.6, 923.4, step_khz=100)  # fewer points = faster scan
+    freqs = build_freq_list(920.0, 924.0, step_khz=250)  # fewer points = faster scan
 
-    chirp_sender_countdown_sync_and_tx(lora, base_freq, freqs, window_ms=1200)
+    chirp_sender_countdown_sync_and_tx(lora, base_freq, freqs, window_ms=200)
     return
     # ----------------------------------------------------------
 
