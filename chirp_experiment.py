@@ -62,7 +62,7 @@ def chirp_sender_countdown_sync_and_tx(
     freqs_mhz,
     start_delay_ms=3000,
     announce_interval_ms=150,
-    window_ms=400,              # longer per-frequency window
+    window_ms=500,              # longer per-frequency window
     beacon_interval_ms=15,      # send beacons repeatedly within window
     tx_timeout_ms=1500,
     print_live=True
@@ -126,7 +126,7 @@ def chirp_receiver_wait_then_scan(
     freqs_mhz,
     wait_timeout_ms=0,
     settle_ms=5,
-    window_ms=400,              # match TX window_ms
+    window_ms=500,              # match TX window_ms
     listen_chunk_ms=120,
     default_rssi_dbm=-200,
     aggregator="avg",           # "max" or "avg"
@@ -187,22 +187,32 @@ def chirp_receiver_wait_then_scan(
         lora.set_frequency(int(f * 1_000_000))
         time.sleep_ms(settle_ms)
 
-        # Wait until the actual slot begins
-        _sleep_until(slot_start)
+        # IMPORTANT: enter RX_CONTINUOUS once per slot
+        lora.rx_continuous()
 
         rssis = []
         snrs  = []
 
-        while time.ticks_diff(slot_end, _ticks_now()) > 0:
-            remaining = time.ticks_diff(slot_end, _ticks_now())
+        t_end = time.ticks_add(_ticks_now(), window_ms)
+        while time.ticks_diff(t_end, _ticks_now()) > 0:
+            remaining = time.ticks_diff(t_end, _ticks_now())
             to_ms = listen_chunk_ms if remaining > listen_chunk_ms else remaining
-            pkt, rssi, snr = lora.recv(timeout_ms=to_ms)
+
+            pkt, rssi, snr = lora.recv_keep_rx(timeout_ms=to_ms)
 
             if pkt is not None and pkt.startswith(CHIRP_BEACON_PREFIX):
-                try: rssis.append(float(rssi))
-                except: pass
-                try: snrs.append(float(snr))
-                except: pass
+                try:
+                    rssis.append(float(rssi))
+                except:
+                    pass
+                try:
+                    snrs.append(float(snr))
+                except:
+                    pass
+
+        # exit RX before next retune (good hygiene)
+        lora.standby()
+
 
         if rssis:
             rssi_out = (sum(rssis) / len(rssis)) if aggregator == "avg" else max(rssis)

@@ -178,6 +178,52 @@ class SX1276:
                 self.standby()
                 return False
 
+    def rx_continuous(self):
+        """Enter RX_CONTINUOUS and keep it there (for fast polling reads)."""
+        # Clear IRQs
+        self._write_reg(self.REG_IRQ_FLAGS, 0xFF)
+        # Set RX base and ptr
+        rx_base = self._read_reg(self.REG_FIFO_RX_BASE_ADDR)
+        self._write_reg(self.REG_FIFO_ADDR_PTR, rx_base)
+        # Continuous RX
+        self._write_reg(self.REG_OP_MODE, self.MODE_LONG_RANGE_MODE | self.MODE_RX_CONTINUOUS)
+
+    def recv_keep_rx(self, timeout_ms=0):
+        """Like recv(), but assumes we are already in RX_CONTINUOUS and
+        does NOT switch to standby after a packet. Returns (payload, rssi_dbm, snr_db)
+        or (None, None, None) on timeout/CRC error.
+        """
+        t0 = time.ticks_ms()
+        while True:
+            irq = self._read_reg(self.REG_IRQ_FLAGS)
+
+            if irq & self.IRQ_RX_DONE_MASK:
+                # CRC error
+                if irq & self.IRQ_PAYLOAD_CRC_ERROR:
+                    self._write_reg(self.REG_IRQ_FLAGS, 0xFF)
+                    return (None, None, None)
+
+                fifo_addr = self._read_reg(self.REG_FIFO_RX_CURRENT_ADDR)
+                self._write_reg(self.REG_FIFO_ADDR_PTR, fifo_addr)
+                nbytes = self._read_reg(self.REG_RX_NB_BYTES)
+                payload = self._read_buf(self.REG_FIFO, nbytes)
+
+                pkt_snr = self._read_reg(self.REG_PKT_SNR_VALUE)
+                if pkt_snr > 127:
+                    pkt_snr -= 256
+                snr_db = pkt_snr / 4.0
+
+                pkt_rssi = self._read_reg(self.REG_PKT_RSSI_VALUE)
+                rssi_dbm = -157 + pkt_rssi
+
+                # Clear IRQs, BUT stay in RX_CONTINUOUS
+                self._write_reg(self.REG_IRQ_FLAGS, 0xFF)
+                return (payload, rssi_dbm, snr_db)
+
+            if timeout_ms and time.ticks_diff(time.ticks_ms(), t0) > timeout_ms:
+                return (None, None, None)
+
+
     def recv(self, timeout_ms=0):
         """Blocking receive. timeout_ms=0 means wait forever.
         Returns (payload_bytes, rssi_dbm, snr_db) or (None, None, None) on timeout/CRC error."""
