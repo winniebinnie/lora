@@ -54,7 +54,7 @@ def _epoch_s_or_zero():
 
 
 # -------------------------
-# TX: countdown sync + chirp (long windows)
+# TX: countdown sync + chirp
 # -------------------------
 def chirp_sender_countdown_sync_and_tx(
     lora,
@@ -62,8 +62,10 @@ def chirp_sender_countdown_sync_and_tx(
     freqs_mhz,
     start_delay_ms=3000,
     announce_interval_ms=150,
-    window_ms=500,              # longer per-frequency window
-    beacon_interval_ms=15,      # send beacons repeatedly within window
+    window_ms=200,
+    beacon_interval_ms=25,
+    inter_sweep_gap_ms=800,
+    num_sweeps=5,
     tx_timeout_ms=1500,
     print_live=True
 ):
@@ -89,32 +91,41 @@ def chirp_sender_countdown_sync_and_tx(
     if print_live:
         print("SYNC TX: start time reached, beginning chirp")
 
-        # Anchor sweep schedule so RX won't drift out of sync
-    sweep_start = _ticks_now()
-    tx_offset_ms = 30  # wait into the slot before first beacon (gives RX time)
+    # ABSOLUTE schedule (must match RX)
+    nfreq = len(freqs_mhz)
+    sweep_period_ms = (nfreq * window_ms) + inter_sweep_gap_ms
+    tx_offset_ms = 30  # small guard so RX is listening when TX starts slot
 
-    for idx, f in enumerate(freqs_mhz):
-        slot_start = time.ticks_add(sweep_start, idx * window_ms)
-        slot_end   = time.ticks_add(slot_start, window_ms)
+    # Anchor sweep0 to the synced start_at
+    global_start = start_at
 
-        _sleep_until(slot_start)
-
-        lora.set_frequency(int(f * 1_000_000))
-
-        # Start transmitting slightly AFTER slot start
-        _sleep_until(time.ticks_add(slot_start, tx_offset_ms))
+    for sweep in range(num_sweeps):
+        sweep_start = time.ticks_add(global_start, sweep * sweep_period_ms)
 
         if print_live:
-            print("CHIRP TX: idx={} f={:.3f} MHz window={}ms".format(idx, f, window_ms))
+            print("=== SWEEP {}/{} ===".format(sweep + 1, num_sweeps))
 
-        while time.ticks_diff(slot_end, _ticks_now()) > 0:
-            beacon = CHIRP_BEACON_PREFIX + ("{:.6f}".format(f)).encode()
-            lora.send(beacon, timeout_ms=tx_timeout_ms)
-            time.sleep_ms(beacon_interval_ms)
+        for idx, f in enumerate(freqs_mhz):
+            slot_start = time.ticks_add(sweep_start, idx * window_ms)
+            slot_end   = time.ticks_add(slot_start, window_ms)
 
-        _sleep_until(slot_end)
+            _sleep_until(slot_start)
 
+            lora.set_frequency(int(f * 1_000_000))
 
+            # wait slightly into the slot before first TX
+            _sleep_until(time.ticks_add(slot_start, tx_offset_ms))
+
+            while time.ticks_diff(slot_end, _ticks_now()) > 0:
+                # include sweep id to verify alignment (optional but helpful)
+                beacon = CHIRP_BEACON_PREFIX + ("%d,{:.6f}".format(f) % sweep).encode()
+                lora.send(beacon, timeout_ms=tx_timeout_ms)
+                time.sleep_ms(beacon_interval_ms)
+
+            _sleep_until(slot_end)
+
+        # stay aligned to sweep_period boundary (don’t just sleep a fixed gap)
+        _sleep_until(time.ticks_add(sweep_start, sweep_period_ms))
 
 
 # -------------------------
@@ -126,10 +137,12 @@ def chirp_receiver_wait_then_scan(
     freqs_mhz,
     wait_timeout_ms=0,
     settle_ms=5,
-    window_ms=500,              # match TX window_ms
+    window_ms=200,
     listen_chunk_ms=120,
     default_rssi_dbm=-200,
-    aggregator="avg",           # "max" or "avg"
+    aggregator="avg",
+    num_sweeps=5,
+    inter_sweep_gap_ms=800,
     save_path="rssi_scan.csv",
     print_live=True
 ):
@@ -143,7 +156,6 @@ def chirp_receiver_wait_then_scan(
     start_time_ms = None
     last_remaining = None
 
-    # Wait for countdown sync packet
     while start_time_ms is None:
         pkt, rssi, snr = lora.recv(timeout_ms=300)
         remaining = _parse_start_packet(pkt)
@@ -164,74 +176,85 @@ def chirp_receiver_wait_then_scan(
 
     _sleep_until(start_time_ms)
 
-    scan_start_ticks = _ticks_now()
     if print_live:
         print("SYNC RX: starting chirp scan now (t_ms=0)")
 
     rows = []
-    header = "idx,freq_mhz,t_ms,rssi_dbm,snr_db,epoch_s\n"
+    header = "sweep,idx,freq_mhz,t_ms,rssi_dbm,snr_db,epoch_s\n"
 
-        # Anchor scan schedule so we stay aligned with TX slots
-    sweep_start = _ticks_now()
-    rx_pretune_ms = 40  # tune BEFORE slot start
-    # keep settle_ms small now that we pretune
+    rx_pretune_ms = 40
 
-    for idx, f in enumerate(freqs_mhz):
-        slot_start = time.ticks_add(sweep_start, idx * window_ms)
-        slot_end   = time.ticks_add(slot_start, window_ms)
+    nfreq = len(freqs_mhz)
+    sweep_period_ms = (nfreq * window_ms) + inter_sweep_gap_ms
 
-        # Pretune early so we don't miss the beginning
-        tune_at = time.ticks_add(slot_start, -rx_pretune_ms)
-        _sleep_until(tune_at)
+    # Anchor to the same absolute origin as TX (the synced start_time_ms)
+    global_start = start_time_ms
 
-        lora.set_frequency(int(f * 1_000_000))
-        time.sleep_ms(settle_ms)
-
-        # IMPORTANT: enter RX_CONTINUOUS once per slot
-        lora.rx_continuous()
-
-        rssis = []
-        snrs  = []
-
-        t_end = time.ticks_add(_ticks_now(), window_ms)
-        while time.ticks_diff(t_end, _ticks_now()) > 0:
-            remaining = time.ticks_diff(t_end, _ticks_now())
-            to_ms = listen_chunk_ms if remaining > listen_chunk_ms else remaining
-
-            pkt, rssi, snr = lora.recv_keep_rx(timeout_ms=to_ms)
-
-            if pkt is not None and pkt.startswith(CHIRP_BEACON_PREFIX):
-                try:
-                    rssis.append(float(rssi))
-                except:
-                    pass
-                try:
-                    snrs.append(float(snr))
-                except:
-                    pass
-
-        # exit RX before next retune (good hygiene)
-        lora.standby()
-
-
-        if rssis:
-            rssi_out = (sum(rssis) / len(rssis)) if aggregator == "avg" else max(rssis)
-        else:
-            rssi_out = float(default_rssi_dbm)
-
-        snr_out = (sum(snrs) / len(snrs)) if snrs else 0.0
-
-        t_ms = time.ticks_diff(_ticks_now(), sweep_start)
-        epoch_s = _epoch_s_or_zero()
-
-        rows.append((idx, f, t_ms, rssi_out, snr_out, epoch_s))
+    for sweep in range(num_sweeps):
+        sweep_start = time.ticks_add(global_start, sweep * sweep_period_ms)
 
         if print_live:
-            print("CHIRP RX: idx={} f={:.3f} MHz t_ms={} rssi={} dBm samples={}".format(
-                idx, f, t_ms, rssi_out, len(rssis)
-            ))
+            print("=== SWEEP {}/{} ===".format(sweep + 1, num_sweeps))
 
+        for idx, f in enumerate(freqs_mhz):
+            slot_start = time.ticks_add(sweep_start, idx * window_ms)
+            slot_end   = time.ticks_add(slot_start, window_ms)
 
+            tune_at = time.ticks_add(slot_start, -rx_pretune_ms)
+            _sleep_until(tune_at)
+
+            lora.set_frequency(int(f * 1_000_000))
+            time.sleep_ms(settle_ms)
+
+            lora.rx_continuous()
+            _sleep_until(slot_start)
+
+            rssis = []
+            snrs  = []
+
+            while time.ticks_diff(slot_end, _ticks_now()) > 0:
+                remaining = time.ticks_diff(slot_end, _ticks_now())
+                to_ms = listen_chunk_ms if remaining > listen_chunk_ms else remaining
+
+                pkt, rssi, snr = lora.recv_keep_rx(timeout_ms=to_ms)
+
+                if pkt is not None and pkt.startswith(CHIRP_BEACON_PREFIX):
+                    # optional debug: verify sweep id is what we expect
+                    # expected format: b"CHIRP:<sweep>,<freq>"
+                    try:
+                        body = pkt[len(CHIRP_BEACON_PREFIX):].decode()
+                        sw_str, _freq_str = body.split(",", 1)
+                        if int(sw_str) != sweep:
+                            # wrong sweep => ignore (keeps logs clean)
+                            continue
+                    except:
+                        pass
+
+                    try: rssis.append(float(rssi))
+                    except: pass
+                    try: snrs.append(float(snr))
+                    except: pass
+
+            lora.standby()
+
+            if rssis:
+                rssi_out = (sum(rssis) / len(rssis)) if aggregator == "avg" else max(rssis)
+            else:
+                rssi_out = float(default_rssi_dbm)
+
+            snr_out = (sum(snrs) / len(snrs)) if snrs else 0.0
+            t_ms = time.ticks_diff(_ticks_now(), sweep_start)
+            epoch_s = _epoch_s_or_zero()
+
+            rows.append((sweep, idx, f, t_ms, rssi_out, snr_out, epoch_s))
+
+            if print_live:
+                print("CHIRP RX: sweep={} idx={} f={:.3f} MHz t_ms={} rssi={} dBm samples={}".format(
+                    sweep, idx, f, t_ms, rssi_out, len(rssis)
+                ))
+
+        # keep aligned to the sweep boundary
+        _sleep_until(time.ticks_add(sweep_start, sweep_period_ms))
 
     try:
         save_csv(save_path, rows, header=header)
@@ -242,4 +265,3 @@ def chirp_receiver_wait_then_scan(
             print("CSV save failed:", e)
 
     return rows
-

@@ -1,58 +1,63 @@
-import csv
-import math
+import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MultipleLocator, FuncFormatter
+import numpy as np
 
-freq = []
-rssi = []
-t_s  = []
-snr  = []
+df = pd.read_csv("rssi_scan.csv")
 
-with open("rssi_scan.csv", newline="") as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        freq.append(float(row["freq_mhz"]))
-        rssi.append(float(row["rssi_dbm"]))
-        t_s.append(float(row["t_ms"]) / 1000.0)
-        snr.append(float(row.get("snr_db", 0.0)))
+# Coerce types
+for col in ["rssi_dbm", "snr_db", "freq_mhz", "t_ms"]:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-def nice_ylim(values, pad=0.5):
-    vmin = min(values)
-    vmax = max(values)
-    if vmax == vmin:
-        return vmin - 1, vmax + 1
-    return (math.floor(vmin - pad), math.ceil(vmax + pad))
+df["sweep"] = pd.to_numeric(df.get("sweep", 0), errors="coerce").fillna(0).astype(int)
 
-mean_rssi = sum(rssi) / len(rssi)
-ymin, ymax = nice_ylim(rssi, pad=0.6)
+# Treat -200 as missing (no packet)
+df_valid = df.copy()
+df_valid.loc[df_valid["rssi_dbm"] <= -199, "rssi_dbm"] = np.nan
 
-# -------- Plot 1: RSSI vs Frequency --------
+# 1) Each sweep
 plt.figure()
-plt.plot(freq, rssi, marker="o")
-plt.axhline(mean_rssi, linestyle="--", linewidth=1, label=f"Mean = {mean_rssi:.2f} dBm")
-
+for sweep_id, g in df_valid.groupby("sweep"):
+    g = g.sort_values("freq_mhz")
+    plt.plot(g["freq_mhz"], g["rssi_dbm"], marker="o", label=f"Sweep {sweep_id+1}")
 plt.xlabel("Frequency (MHz)")
 plt.ylabel("RSSI (dBm)")
-plt.title("RSSI vs Frequency (Chirp Sweep)")
+plt.title("RSSI vs Frequency (each sweep)")
 plt.grid(True)
-
-# Zoom Y scale (this is the main change)
-plt.ylim(ymin, ymax)
-plt.gca().yaxis.set_major_locator(MultipleLocator(1))   # 1 dB ticks
-# If you want 0.5 dB ticks instead, use:
-# plt.gca().yaxis.set_major_locator(MultipleLocator(0.5))
-
-# Make frequency axis cleaner (e.g., show 2 decimals)
-plt.gca().xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x:.2f}"))
-
 plt.legend()
 plt.tight_layout()
+plt.savefig("rssi_vs_freq_each_sweep.png", dpi=200)
 
-# Same zoomed Y scale for easy comparison
-plt.ylim(ymin, ymax)
-plt.gca().yaxis.set_major_locator(MultipleLocator(1))
+# 2) Mean ± std
+agg = df_valid.groupby("freq_mhz").agg(
+    mean_rssi=("rssi_dbm", "mean"),
+    std_rssi=("rssi_dbm", "std"),
+    n=("rssi_dbm", "count")
+).reset_index().sort_values("freq_mhz")
 
-plt.legend()
+plt.figure()
+plt.errorbar(agg["freq_mhz"], agg["mean_rssi"], yerr=agg["std_rssi"], fmt="o-", capsize=3)
+plt.xlabel("Frequency (MHz)")
+plt.ylabel("RSSI (dBm)")
+plt.title("RSSI vs Frequency (mean ± std across sweeps)")
+plt.grid(True)
 plt.tight_layout()
+plt.savefig("rssi_vs_freq_mean_std.png", dpi=200)
+
+# 3) Missing rate
+miss = df.groupby("freq_mhz").agg(
+    total=("rssi_dbm", "size"),
+    missing=("rssi_dbm", lambda x: int((pd.to_numeric(x, errors="coerce") <= -199).sum()))
+).reset_index().sort_values("freq_mhz")
+miss["missing_rate"] = miss["missing"] / miss["total"]
+
+plt.figure()
+plt.plot(miss["freq_mhz"], miss["missing_rate"], marker="o")
+plt.xlabel("Frequency (MHz)")
+plt.ylabel("Missing rate (fraction)")
+plt.title("Packet-miss rate vs Frequency (RSSI=-200 treated as missing)")
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("missing_rate_vs_freq.png", dpi=200)
 
 plt.show()
