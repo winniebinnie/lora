@@ -265,3 +265,108 @@ def chirp_receiver_wait_then_scan(
             print("CSV save failed:", e)
 
     return rows
+
+# -------------------------
+# Fixed-frequency RSSI logging (time series)
+# -------------------------
+
+def fixed_freq_sender_tx(
+    lora,
+    freq_mhz,
+    duration_ms=300000,
+    beacon_interval_ms=100,
+    tx_timeout_ms=1500,
+    prefix=b"FIX:",
+    print_every=200,
+):
+    """
+    Transmit short beacons repeatedly at one fixed frequency.
+    duration_ms=300000 => 5 minutes
+    """
+    lora.set_frequency(int(freq_mhz * 1_000_000))
+    t0 = _ticks_now()
+    t_end = time.ticks_add(t0, duration_ms)
+
+    i = 0
+    while time.ticks_diff(t_end, _ticks_now()) > 0:
+        # Keep payload short to reduce airtime
+        pkt = prefix + ("%d" % i).encode()
+        ok = lora.send(pkt, timeout_ms=tx_timeout_ms)
+
+        if print_every and (i % print_every == 0):
+            print("FIX TX: f={:.3f} MHz i={} ok={}".format(freq_mhz, i, ok))
+
+        i += 1
+        time.sleep_ms(beacon_interval_ms)
+
+
+def fixed_freq_receiver_log(
+    lora,
+    freq_mhz,
+    duration_ms=300000,
+    listen_chunk_ms=200,
+    settle_ms=5,
+    save_path="rssi_920.csv",
+    prefix=b"FIX:",
+    print_every=200,
+    flush_every=50,
+):
+    """
+    Receive continuously at one fixed frequency and log RSSI/SNR per packet.
+    STREAMS directly to CSV (no large RAM usage).
+    CSV columns: t_ms,rssi_dbm,snr_db,epoch_s
+    """
+    import gc
+
+    lora.set_frequency(int(freq_mhz * 1_000_000))
+    time.sleep_ms(settle_ms)
+    lora.rx_continuous()
+
+    t0 = _ticks_now()
+    t_end = time.ticks_add(t0, duration_ms)
+
+    n = 0
+    try:
+        f = open(save_path, "w")
+        f.write("t_ms,rssi_dbm,snr_db,epoch_s\n")
+
+        while time.ticks_diff(t_end, _ticks_now()) > 0:
+            pkt, rssi, snr = lora.recv_keep_rx(timeout_ms=listen_chunk_ms)
+            if pkt is None:
+                continue
+            if prefix and (not pkt.startswith(prefix)):
+                continue
+
+            t_ms = time.ticks_diff(_ticks_now(), t0)
+            epoch_s = _epoch_s_or_zero()
+
+            # Write CSV line with minimal allocations
+            f.write(str(t_ms))
+            f.write(",")
+            f.write(str(rssi))
+            f.write(",")
+            f.write(str(snr))
+            f.write(",")
+            f.write(str(epoch_s))
+            f.write("\n")
+
+            if print_every and (n % print_every == 0):
+                print("FIX RX: t_ms={} rssi={} snr={}".format(t_ms, rssi, snr))
+
+            if flush_every and (n % flush_every == 0):
+                f.flush()
+                gc.collect()
+
+            n += 1
+
+        f.flush()
+        f.close()
+        print("Saved:", save_path, "rows:", n)
+
+    finally:
+        try:
+            lora.standby()
+        except:
+            pass
+
+    return n

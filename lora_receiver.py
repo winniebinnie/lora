@@ -112,14 +112,26 @@ def main():
     session_key = None
 
     # --- CHIRP RX SCAN EXPERIMENT (comment out when not testing) ---
-    from chirp_experiment import build_freq_list, chirp_receiver_wait_then_scan
-    base_freq = 923.2
-    freqs = build_freq_list(920.0, 924.0, step_khz=250)  # fewer points = faster scan
+    # from chirp_experiment import build_freq_list, chirp_receiver_wait_then_scan
+    # base_freq = 923.2
+    # freqs = build_freq_list(920.0, 924.0, step_khz=250)  # fewer points = faster scan
 
-    chirp_receiver_wait_then_scan(lora, base_freq, freqs, window_ms=200)
-    return
+    # chirp_receiver_wait_then_scan(lora, base_freq, freqs, window_ms=200)
+    # return
     # --------------------------------------------------------------
 
+    # --- FIXED-FREQ RSSI EXPERIMENT (comment out when not testing) ---
+    from chirp_experiment import fixed_freq_receiver_log
+
+    fixed_freq_receiver_log(
+        lora,
+        freq_mhz=922.0,
+        duration_ms=300000,       # 5 minutes
+        save_path="rssi_922.csv",
+        print_every=200
+    )
+    return
+    # ---------------------------------------------------------------
 
     while True:
         # Pin RX to current slot, and only listen until slot ends (+ guard)

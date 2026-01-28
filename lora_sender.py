@@ -143,13 +143,27 @@ def main():
     message = "HELLLLLLLOOOOOOOO"
 
     # --- CHIRP TX EXPERIMENT (comment out when not testing) ---
-    from chirp_experiment import build_freq_list, chirp_sender_countdown_sync_and_tx
-    base_freq = 923.2
-    freqs = build_freq_list(920.0, 924.0, step_khz=250)  # fewer points = faster scan
+    # from chirp_experiment import build_freq_list, chirp_sender_countdown_sync_and_tx
+    # base_freq = 923.2
+    # freqs = build_freq_list(920.0, 924.0, step_khz=250)  # fewer points = faster scan
 
-    chirp_sender_countdown_sync_and_tx(lora, base_freq, freqs, window_ms=200)
-    return
+    # chirp_sender_countdown_sync_and_tx(lora, base_freq, freqs, window_ms=200)
+    # return
     # ----------------------------------------------------------
+
+    # --- FIXED-FREQ RSSI EXPERIMENT (comment out when not testing) ---
+    from chirp_experiment import fixed_freq_sender_tx
+
+    fixed_freq_sender_tx(
+        lora,
+        freq_mhz=922.0,
+        duration_ms=300000,       # 5 minutes
+        beacon_interval_ms=100,   # safer than 25–50ms for airtime
+        print_every=200
+    )
+    return
+    # ---------------------------------------------------------------
+
 
     while True:
         # --- Handshake ---
