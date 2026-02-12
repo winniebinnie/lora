@@ -19,8 +19,8 @@ SPREADING_FACTOR = 7
 # === FHSS CONFIG (MUST MATCH RECEIVER) ===
 FREQ_TABLE_MHZ = [920.6, 920.8, 921.0, 921.2, 921.4, 921.6, 923.2, 923.4]
 HOP_INTERVAL_MS = 4000
-HOP_GUARD_MS = 250
-
+HOP_GUARD_MS = 900  # extra guard for slot-edge tolerance
+TX_TUNE_SETTLE_MS = 25  # allow SX127x PLL settle after hopping
 # Handshake rendezvous channel (both must match)
 RENDEZVOUS_FREQ_MHZ = 923.2
 
@@ -81,6 +81,33 @@ def q_rssi(rssi_dbm, step=1):
 def kdf_from_rssi_and_nonce(q, nonce_bytes):
     h = uhashlib.sha256(b"RSSI-KDFv1|" + str(q).encode() + b"|" + nonce_bytes)
     return h.digest()[:16]
+
+# --- TX slot-center alignment (improves reliability near slot edges) ---
+TX_CENTER_MS = HOP_INTERVAL_MS // 2
+TX_CENTER_TOL_MS = 500   # only transmit when within ±500ms of slot center
+
+
+def wait_until_slot_center(epoch_ms):
+    """Block until we're near the center of the current epoch-based slot.
+
+    This avoids transmitting near hop boundaries where RX may already have hopped.
+    """
+    while True:
+        slot = slot_from_epoch(epoch_ms)
+        if slot < 0:
+            time.sleep_ms(25)
+            continue
+        phase = phase_in_epoch_slot_ms(epoch_ms)
+        # If we're already near center, go now
+        if abs(phase - TX_CENTER_MS) <= TX_CENTER_TOL_MS:
+            return slot
+        # Otherwise sleep until center (this slot if still ahead, else next slot)
+        if phase < TX_CENTER_MS:
+            time.sleep_ms(TX_CENTER_MS - phase)
+        else:
+            time.sleep_ms((HOP_INTERVAL_MS - phase) + TX_CENTER_MS)
+
+
 
 def aes_ecb_decrypt(key16, ct):
     c = ucryptolib.aes(key16, 1)  # ECB
@@ -244,11 +271,8 @@ def main():
                 time.sleep_ms(200)
                 continue
 
-        # Wait until FHSS epoch
-        slot = slot_from_epoch(fhss_epoch_ms)
-        if slot < 0:
-            time.sleep_ms(50)
-            continue
+        # Wait until FHSS epoch + align to slot center (edge-safe)
+        slot = wait_until_slot_center(fhss_epoch_ms)
 
         # --- Secure data ---
         msg_key = derive_msg_key(session_key, counter)
@@ -257,6 +281,7 @@ def main():
         payload = "iv={},msg={},counter={},t={},kind=data,slot={}".format(iv_hex, ct_hex, counter, t_ms, slot)
 
         freq = set_freq_for_slot_seeded(lora, hop_seed, slot)
+        time.sleep_ms(TX_TUNE_SETTLE_MS)
 
         ok = lora.send(payload.encode(), timeout_ms=1500)
         if ok:
@@ -267,7 +292,23 @@ def main():
             print("Alice: TX data timeout on freq={:.3f} slot={}".format(freq, slot))
 
         counter += 1
-        time.sleep(2)
+
+        # Optional repeat in SAME slot (still near center), improves capture probability
+        time.sleep_ms(300)
+        if slot_from_epoch(fhss_epoch_ms) == slot:
+            msg_key = derive_msg_key(session_key, counter)
+            iv_hex, ct_hex = enc_msg_cbc(msg_key, message)
+            t_ms = time.ticks_ms()
+            payload = "iv={},msg={},counter={},t={},kind=data,slot={}".format(iv_hex, ct_hex, counter, t_ms, slot)
+            ok = lora.send(payload.encode(), timeout_ms=1500)
+            if ok:
+                print("[STEP 6] Alice: TX secure data ok (ctr={} t={} freq={:.3f} slot={})".format(
+                    counter, t_ms, freq, slot
+                ))
+            counter += 1
+
+        # sleep a bit; next loop will re-align to the next slot center
+        time.sleep_ms(50)
 
 if __name__ == "__main__":
     try:

@@ -23,7 +23,13 @@ SPREADING_FACTOR = 7
 # === FHSS CONFIG (MUST MATCH SENDER) ===
 FREQ_TABLE_MHZ = [920.6, 920.8, 921.0, 921.2, 921.4, 921.6, 923.2, 923.4]
 HOP_INTERVAL_MS = 4000
-HOP_GUARD_MS = 250   # tune 100–500ms
+HOP_GUARD_MS = 900   # extra guard for slot-edge tolerance
+RX_TUNE_SETTLE_MS = 25  # allow SX127x PLL settle after hopping
+# tune 100–500ms
+
+# Reduce log spam: only report a "silent" slot once, after the slot ends with no packets.
+# Set True to print every recv timeout (debug).
+PRINT_TIMEOUT_EACH_RECV = False
 
 # Handshake rendezvous channel (both must match)
 RENDEZVOUS_FREQ_MHZ = 923.2
@@ -134,6 +140,10 @@ def main():
     hop_seed = None
     fhss_epoch_ms = None
 
+    # For timeout/log throttling
+    last_slot = None
+    seen_in_slot = False
+
     # Start on rendezvous for handshake
     set_freq_mhz(lora, RENDEZVOUS_FREQ_MHZ)
     print("Listening on rendezvous = %.3f MHz" % RENDEZVOUS_FREQ_MHZ)
@@ -158,6 +168,15 @@ def main():
         else:
             # FHSS listen (epoch-synced)
             slot = slot_from_epoch(fhss_epoch_ms)
+            # Slot-change throttle: if we advanced slots and saw no packets in the previous slot,
+            # print ONE timeout for that previous slot (instead of spamming every recv timeout).
+            if last_slot is not None and slot != last_slot:
+                if (not seen_in_slot) and (not PRINT_TIMEOUT_EACH_RECV):
+                    prev_f = hop_freq_for_slot_seeded(hop_seed, last_slot)
+                    print("Bob: RX timeout/CRC on freq=%.3f MHz slot=%d" % (prev_f, last_slot))
+                seen_in_slot = False
+            if slot >= 0:
+                last_slot = slot
             if slot < 0:
                 # not time to start yet -> stay on rendezvous briefly
                 freq = set_freq_mhz(lora, RENDEZVOUS_FREQ_MHZ)
@@ -166,12 +185,14 @@ def main():
                 freq = set_freq_for_slot_seeded(lora, hop_seed, slot)
                 # Listen through remainder of slot (+ guard)
                 timeout_ms = time_left_in_epoch_slot_ms(fhss_epoch_ms) + HOP_GUARD_MS
+                time.sleep_ms(RX_TUNE_SETTLE_MS)
 
         payload, rssi, snr = lora.recv(timeout_ms=timeout_ms)
         if payload is None:
             if session_key is None:
                 continue
-            print("Bob: RX timeout/CRC on freq=%.3f MHz slot=%d" % (freq, max(0, slot_from_epoch(fhss_epoch_ms))))
+            if PRINT_TIMEOUT_EACH_RECV:
+                print("Bob: RX timeout/CRC on freq=%.3f MHz slot=%d" % (freq, max(0, slot_from_epoch(fhss_epoch_ms))))
             continue
 
         try:
@@ -181,6 +202,12 @@ def main():
             continue
 
         kv = parse_kvs(text)
+
+        # Mark activity for timeout throttling (only after FHSS starts)
+        if session_key is not None and fhss_epoch_ms is not None:
+            s_now = slot_from_epoch(fhss_epoch_ms)
+            if s_now >= 0:
+                seen_in_slot = True
 
         # ---- Handshake HELLO ----
         if kv.get("hello") == "1" and "nonce" in kv:
