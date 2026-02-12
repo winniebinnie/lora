@@ -1,6 +1,10 @@
 # lora_receiver.py — RSSI-based dynamic key exchange responder + FHSS + per-message key (MicroPython)
 from lora_min import SX1276
 import time, ucryptolib, ubinascii, uhashlib, struct
+import bench_crypto
+
+# run benchmarks once at startup
+# bench_crypto.run_all()
 
 # --- secure random bytes ---
 try:
@@ -95,12 +99,39 @@ def main():
     lora = SX1276(sck=18, mosi=23, miso=19, cs=5, rst=17)
     lora.set_tx_power(TX_POWER)
     lora.set_spreading_factor(SPREADING_FACTOR)
+    
+    lora.set_bandwidth(125000)     # fast chirps
+    lora.set_spreading_factor(7)   # faster than SF10/11/12
+    lora.set_coding_rate(5)        # 4/5 fastest coding
+    lora.set_crc(True)
 
     slot0 = current_slot()
     f0 = set_freq_for_slot(lora, slot0)
     print("Initial hop freq = %.3f MHz (slot=%d)" % (f0, slot0))
 
     session_key = None
+
+    # --- CHIRP RX SCAN EXPERIMENT (comment out when not testing) ---
+    # from chirp_experiment import build_freq_list, chirp_receiver_wait_then_scan
+    # base_freq = 923.2
+    # freqs = build_freq_list(920.0, 924.0, step_khz=250)  # fewer points = faster scan
+
+    # chirp_receiver_wait_then_scan(lora, base_freq, freqs, window_ms=200)
+    # return
+    # --------------------------------------------------------------
+
+    # --- FIXED-FREQ RSSI EXPERIMENT (comment out when not testing) ---
+    from chirp_experiment import fixed_freq_receiver_log
+
+    fixed_freq_receiver_log(
+        lora,
+        freq_mhz=922.0,
+        duration_ms=300000,       # 5 minutes
+        save_path="rssi_922.csv",
+        print_every=200
+    )
+    return
+    # ---------------------------------------------------------------
 
     while True:
         # Pin RX to current slot, and only listen until slot ends (+ guard)
@@ -197,4 +228,5 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("Receiver stopped.")
+
 

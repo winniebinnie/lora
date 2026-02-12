@@ -1,5 +1,3 @@
-Here’s an updated `README.md` you can copy-paste into **winniebinnie/lora** that matches the *actual files in the repo* (`lora_min.py`, `lora_sender.py`, `lora_receiver.py`, `log rssi into csv.py`) and your current **FHSS + RSSI-handshake** direction.
-
 ````markdown
 # LoRa SX1276 (MicroPython) — FHSS + RSSI Handshake Demo
 
