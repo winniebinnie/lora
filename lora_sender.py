@@ -128,12 +128,6 @@ def main():
     lora.set_tx_power(TX_POWER)
     lora.set_spreading_factor(SPREADING_FACTOR)
 
-    lora.set_bandwidth(125000)     # fast chirps
-    lora.set_spreading_factor(7)   # faster than SF10/11/12
-    lora.set_coding_rate(5)        # 4/5 fastest coding
-    lora.set_crc(True)
-
-
     slot0 = current_slot()
     f0 = set_freq_for_slot(lora, slot0)
     print("Initial hop freq = %.3f MHz (slot=%d)" % (f0, slot0))
@@ -141,29 +135,6 @@ def main():
     session_key = None
     counter = 0
     message = "HELLLLLLLOOOOOOOO"
-
-    # --- CHIRP TX EXPERIMENT (comment out when not testing) ---
-    # from chirp_experiment import build_freq_list, chirp_sender_countdown_sync_and_tx
-    # base_freq = 923.2
-    # freqs = build_freq_list(920.0, 924.0, step_khz=250)  # fewer points = faster scan
-
-    # chirp_sender_countdown_sync_and_tx(lora, base_freq, freqs, window_ms=200)
-    # return
-    # ----------------------------------------------------------
-
-    # --- FIXED-FREQ RSSI EXPERIMENT (comment out when not testing) ---
-    from chirp_experiment import fixed_freq_sender_tx
-
-    fixed_freq_sender_tx(
-        lora,
-        freq_mhz=922.0,
-        duration_ms=300000,       # 5 minutes
-        beacon_interval_ms=100,   # safer than 25–50ms for airtime
-        print_every=200
-    )
-    return
-    # ---------------------------------------------------------------
-
 
     while True:
         # --- Handshake ---
@@ -261,5 +232,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("Sender stopped.")
-
-
