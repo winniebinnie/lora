@@ -86,6 +86,29 @@ def derive_msg_key(master_key, counter):
     h = uhashlib.sha256(b"MSG-KDF-v1|" + master_key + b"|" + b_ctr)
     return h.digest()[:16]
 
+
+
+# === Synthesized rolling key (LCG + SHA-256) ===
+# RSSI is only used to seed this generator (via q from Bob + nonce).
+# Then each message derives a fresh key using the rolling LCG state.
+LCG_A = 1103515245
+LCG_C = 12345
+
+def _lcg_advance(seed32, steps):
+    s = seed32 & 0xFFFFFFFF
+    for _ in range(steps):
+        s = (LCG_A * s + LCG_C) & 0xFFFFFFFF
+    return s
+
+def synth_msg_key(session_key, lcg_seed32, counter):
+    # counter=0 -> 1 step; counter=1 -> 2 steps; etc.
+    state = _lcg_advance(lcg_seed32, counter + 1)
+    h = uhashlib.sha256(b"SYNTHK-v1|" + session_key + struct.pack(">I", state))
+    return h.digest()[:16]
+
+def synth_seed32_from_q_nonce(q, nonce_bytes):
+    h = uhashlib.sha256(b"LCG-SEEDv1|" + str(q).encode() + b"|" + nonce_bytes).digest()
+    return struct.unpack(">I", h[:4])[0]
 # ---------- Main ----------
 def main():
     print("Receiver: starting (RSSI-based handshake + FHSS + per-message key)")
@@ -101,6 +124,7 @@ def main():
     print("Initial hop freq = %.3f MHz (slot=%d)" % (f0, slot0))
 
     session_key = None
+    lcg_seed32  = None
 
     while True:
         # Pin RX to current slot, and only listen until slot ends (+ guard)
@@ -142,15 +166,17 @@ def main():
             print("          q={} (quantized RSSI) | nonce={}".format(q, nonce_hex))
 
             session_key = urandom(16)
+            lcg_seed32 = synth_seed32_from_q_nonce(q, nonce)
             print("[STEP 3] Bob: generated SESSION_KEY = {}".format(
                 ubinascii.hexlify(session_key)
             ))
+            print("[STEP 3] Bob: synthesized rolling seed32 = 0x%08X" % (lcg_seed32,))
 
             # Encrypt SESSION_KEY || TAG_BLOCK with AES-ECB(K)
             pt = session_key + TAG_BLOCK
             ek = aes_ecb_encrypt(K, pt)
             ek_hex = ubinascii.hexlify(ek).decode()
-            reply = "ek={},nonce={}".format(ek_hex, nonce_hex)
+            reply = "ek={},nonce={},q={}".format(ek_hex, nonce_hex, q)
 
             # IMPORTANT: send reply on SAME slot/freq we received HELLO on
             ok = lora.send(reply.encode(), timeout_ms=1500)
@@ -176,7 +202,10 @@ def main():
                     print("Bob: bad counter format:", ctr_str)
                     continue
 
-                msg_key = derive_msg_key(session_key, ctr)
+                if lcg_seed32 is None:
+                    msg_key = derive_msg_key(session_key, ctr)  # fallback
+                else:
+                    msg_key = synth_msg_key(session_key, lcg_seed32, ctr)
                 print("[STEP 7] Bob: per-message key derived (ctr={}): K_msg={}".format(
                     ctr, ubinascii.hexlify(msg_key).decode()
                 ))
