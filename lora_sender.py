@@ -92,6 +92,29 @@ def derive_msg_key(master_key, counter):
     h = uhashlib.sha256(b"MSG-KDF-v1|" + master_key + b"|" + b_ctr)
     return h.digest()[:16]
 
+
+
+# === Synthesized rolling key (LCG + SHA-256) ===
+# RSSI is only used to seed this generator (via q from Bob + nonce).
+# Then each message derives a fresh key using the rolling LCG state.
+LCG_A = 1103515245
+LCG_C = 12345
+
+def _lcg_advance(seed32, steps):
+    s = seed32 & 0xFFFFFFFF
+    for _ in range(steps):
+        s = (LCG_A * s + LCG_C) & 0xFFFFFFFF
+    return s
+
+def synth_msg_key(session_key, lcg_seed32, counter):
+    # counter=0 -> 1 step; counter=1 -> 2 steps; etc.
+    state = _lcg_advance(lcg_seed32, counter + 1)
+    h = uhashlib.sha256(b"SYNTHK-v1|" + session_key + struct.pack(">I", state))
+    return h.digest()[:16]
+
+def synth_seed32_from_q_nonce(q, nonce_bytes):
+    h = uhashlib.sha256(b"LCG-SEEDv1|" + str(q).encode() + b"|" + nonce_bytes).digest()
+    return struct.unpack(">I", h[:4])[0]
 def unwrap_session_key_bruteforce(ek_hex, nonce_hex, rssi_reply_dbm):
     ek = ubinascii.unhexlify(ek_hex)
     nonce = ubinascii.unhexlify(nonce_hex)
@@ -133,6 +156,7 @@ def main():
     print("Initial hop freq = %.3f MHz (slot=%d)" % (f0, slot0))
 
     session_key = None
+    lcg_seed32  = None
     counter = 0
     message = "HELLLLLLLOOOOOOOO"
 
@@ -192,6 +216,13 @@ def main():
                     print("[STEP 5] Alice: handshake OK")
                     print("          q_found={} | RSSI_reply={} dBm".format(q_found, rssi))
                     print("          SESSION_KEY = {}".format(ubinascii.hexlify(session_key)))
+                    # Seed synthesized rolling key using Bob's quantized RSSI (q) + nonce
+                    try:
+                        q_seed = int(kv.get("q", q_found))
+                    except Exception:
+                        q_seed = q_found
+                    lcg_seed32 = synth_seed32_from_q_nonce(q_seed, nonce)
+                    print("          synthesized rolling seed32 = 0x%08X (q_seed=%s)" % (lcg_seed32, q_seed))
                 else:
                     print("Alice: Handshake FAILED (window={} dB)".format(RSSI_WINDOW_DB))
                     time.sleep_ms(200)
@@ -203,7 +234,10 @@ def main():
                 continue
 
         # --- Secure data ---
-        msg_key = derive_msg_key(session_key, counter)
+        if lcg_seed32 is None:
+            msg_key = derive_msg_key(session_key, counter)  # fallback
+        else:
+            msg_key = synth_msg_key(session_key, lcg_seed32, counter)
         print("[STEP 7] Alice: per-message key derived (ctr={}): K_msg={}".format(
             counter, ubinascii.hexlify(msg_key).decode()
         ))
