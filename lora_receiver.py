@@ -1,5 +1,5 @@
 # lora_receiver.py — RSSI-based dynamic key exchange responder + FHSS + per-message key (MicroPython)
-from lora_min import SX1276
+from lora import SX1276
 import time, ucryptolib, ubinascii, uhashlib, struct
 
 # --- secure random bytes ---
