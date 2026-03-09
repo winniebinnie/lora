@@ -321,12 +321,3 @@ In production, use standard cryptographic designs and authenticated message prot
 * Log RSSI/SNR to CSV automatically for experiments
 * Replace/augment LCG with a stronger deterministic construction (while keeping embedded constraints in mind)
 
----
-
-## References / inspiration
-
-* Semtech **SX1276** datasheet
-* Original inspiration for driver usage:
-
-  * [https://github.com/winniebinnie/SX1276](https://github.com/winniebinnie/SX1276)
-
