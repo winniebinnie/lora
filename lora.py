@@ -144,6 +144,81 @@ class SX1276:
         else:
             mc3 &= ~0x08
         self._write_reg(self.REG_MODEM_CONFIG3, mc3)
+    
+    def set_bandwidth(self, bw_hz=125000):
+        # REG_MODEM_CONFIG1 bits 7:4
+        # Supported common SX1276 bandwidths
+        bw_map = {
+            125000: 0x70,
+            250000: 0x80,
+            500000: 0x90,
+        }
+        if bw_hz not in bw_map:
+            raise ValueError("Unsupported BW: %s. Use 125000, 250000, or 500000." % bw_hz)
+
+        mc1 = self._read_reg(self.REG_MODEM_CONFIG1)
+        mc1 = (mc1 & 0x0F) | bw_map[bw_hz]
+        self._write_reg(self.REG_MODEM_CONFIG1, mc1)
+
+        if hasattr(self, "_update_ldro"):
+            self._update_ldro()
+
+
+    def set_coding_rate(self, cr=5):
+        # LoRa coding rate is written as 4/5, 4/6, 4/7, 4/8
+        # Here cr=5 means 4/5, cr=6 means 4/6, etc.
+        cr_map = {
+            5: 0x02,
+            6: 0x04,
+            7: 0x06,
+            8: 0x08,
+        }
+        if cr not in cr_map:
+            raise ValueError("Unsupported CR: %s. Use 5, 6, 7, or 8." % cr)
+
+        mc1 = self._read_reg(self.REG_MODEM_CONFIG1)
+        mc1 = (mc1 & 0xF1) | cr_map[cr]
+        self._write_reg(self.REG_MODEM_CONFIG1, mc1)
+
+
+    def set_crc(self, enable=True):
+        mc2 = self._read_reg(self.REG_MODEM_CONFIG2)
+        if enable:
+            mc2 |= 0x04
+        else:
+            mc2 &= ~0x04
+        self._write_reg(self.REG_MODEM_CONFIG2, mc2)
+
+
+    def _get_bw_hz(self):
+        mc1 = self._read_reg(self.REG_MODEM_CONFIG1)
+        bw_nibble = mc1 & 0xF0
+        if bw_nibble == 0x70:
+            return 125000
+        if bw_nibble == 0x80:
+            return 250000
+        if bw_nibble == 0x90:
+            return 500000
+        return 125000
+
+
+    def _get_sf(self):
+        mc2 = self._read_reg(self.REG_MODEM_CONFIG2)
+        return (mc2 >> 4) & 0x0F
+
+
+    def _update_ldro(self):
+        # Enable LowDataRateOptimize when symbol time is long
+        bw = self._get_bw_hz()
+        sf = self._get_sf()
+        tsym_ms = ((1 << sf) * 1000) / bw
+
+        mc3 = self._read_reg(self.REG_MODEM_CONFIG3)
+        if tsym_ms > 16:
+            mc3 |= 0x08
+        else:
+            mc3 &= ~0x08
+        self._write_reg(self.REG_MODEM_CONFIG3, mc3)
 
     def standby(self):
         self._write_reg(self.REG_OP_MODE, self.MODE_LONG_RANGE_MODE | self.MODE_STDBY)

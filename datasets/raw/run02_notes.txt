@@ -1,0 +1,16 @@
+Run ID: run02
+Environment: indoor_static
+Distance: 100 cm
+Frequency: 922 MHz
+SF: 7
+BW: 125 kHz
+CR: 4/5
+TX power: 14 dBm
+Boards: ESP32 + SX1276
+Antenna orientation: vertical
+Movement nearby: none
+Start time:
+Observations:
+- occasional timeout/freeze
+- mostly ok=1
+- RSSI around -66 to -58 dBm

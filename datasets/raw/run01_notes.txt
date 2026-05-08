@@ -1,0 +1,11 @@
+Run ID run01
+Environment indoor_static
+Distance 100 cm
+Frequency 922 MHz
+SF 7
+BW 125 kHz
+CR 45
+TX power 14 dBm
+Purpose parameter tuning
+Result best window=21, block_size=50, alpha=0.75
+Important caveat offset calibration enabled
