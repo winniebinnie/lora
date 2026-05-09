@@ -7,8 +7,8 @@ from lora import SX1276
 import time
 
 # ---------------- User experiment config ----------------
-RUN_ID = "run03"
-ENV_LABEL = "indoor_dynamic"
+RUN_ID = "run04"
+ENV_LABEL = "outdoor_los"
 DISTANCE_CM = 100
 
 FREQ_MHZ = 922.0
