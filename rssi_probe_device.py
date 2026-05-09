@@ -11,8 +11,8 @@ from lora import SX1276
 import time
 
 # ---------------- User experiment config ----------------
-RUN_ID = "run02"
-ENV_LABEL = "indoor_static"       # examples: indoor_static, indoor_dynamic, outdoor_los
+RUN_ID = "run03"
+ENV_LABEL = "indoor_dynamic"       # examples: indoor_static, indoor_dynamic, outdoor_los
 DISTANCE_CM = 100                 # set current distance for this run
 PROBE_COUNT = 1000                 # start with 300-1000 packet pairs
 PROBE_INTERVAL_MS = 250           # increase if packets are missed
