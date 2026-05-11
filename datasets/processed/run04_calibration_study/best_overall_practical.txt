@@ -1,0 +1,23 @@
+run_id                                                                run04
+env                                                             outdoor_los
+distance_cm                                                             100
+freq_mhz                                                              922.0
+calibration_mode                                                       full
+calibration_note                    offline full-dataset offset calibration
+n_total_pairs                                                           987
+n_calibration_pairs                                                       0
+n_keygen_pairs                                                          987
+window                                                                   21
+block_size                                                               50
+alpha                                                                   1.0
+offset_device_minus_network_db                                     1.800405
+usable_bits                                                             248
+discard_rate                                                       0.748734
+mismatches                                                                3
+bdr                                                                0.012097
+entropy_bits_per_bit                                               0.992057
+min_entropy_bits_per_bit                                           0.856164
+p0                                                                 0.552419
+p1                                                                 0.447581
+kgr_bps_before_reconciliation                                      0.440308
+estimated_min_entropy_bits_total                                 212.328728

@@ -1,0 +1,23 @@
+run_id                                                           run01
+env                                                      indoor_static
+distance_cm                                                        100
+freq_mhz                                                         922.0
+calibration_mode                                            online_100
+calibration_note                    online offset from first 100 pairs
+n_total_pairs                                                      486
+n_calibration_pairs                                                100
+n_keygen_pairs                                                     386
+window                                                              21
+block_size                                                          50
+alpha                                                             0.75
+offset_device_minus_network_db                                     3.3
+usable_bits                                                        141
+discard_rate                                                  0.634715
+mismatches                                                           2
+bdr                                                           0.014184
+entropy_bits_per_bit                                          0.999093
+min_entropy_bits_per_bit                                      0.949727
+p0                                                             0.48227
+p1                                                             0.51773
+kgr_bps_before_reconciliation                                  0.64468
+estimated_min_entropy_bits_total                            133.911478
