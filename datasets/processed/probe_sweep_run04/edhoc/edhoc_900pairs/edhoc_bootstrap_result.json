@@ -1,0 +1,48 @@
+{
+  "input_rssi_result": "datasets\\processed\\probe_sweep_run04\\reconciliation\\recon_900pairs\\reconciliation_demo_result.json",
+  "run_id": "run04",
+  "environment": "outdoor_los",
+  "distance_cm": 100.0,
+  "freq_mhz": 922.0,
+  "edhoc_model_note": "Simulated RFC-sized EDHOC transcript, not a full RFC 9528 implementation.",
+  "edhoc_message_lengths": {
+    "message_1": 37,
+    "message_2": 45,
+    "message_3": 19,
+    "total": 101
+  },
+  "rssi_stage": {
+    "n_total_pairs": 890,
+    "n_calibration_pairs": 100,
+    "n_keygen_pairs": 790,
+    "usable_bits": 188,
+    "mismatches_before_reconciliation": 0,
+    "bdr_before_reconciliation": 0.0,
+    "mismatches_after_reconciliation": 0,
+    "bdr_after_reconciliation": 0.0,
+    "estimated_min_entropy_after_leakage": 78.32581083536968,
+    "enough_entropy_for_target_security_bits": false,
+    "target_security_bits": 128
+  },
+  "edhoc_only": {
+    "session_key_hex": "8afc1d354bec2b0f7032464975a8b3fa",
+    "payload_bytes_est": 101,
+    "toa_ms_est": 226.04799999999997
+  },
+  "rssi_bound_edhoc": {
+    "tag_device_hex": "d75e83029c307d293a62c0a2cdee2298",
+    "tag_network_hex": "d75e83029c307d293a62c0a2cdee2298",
+    "tag_match": true,
+    "tampered_transcript_rejected": true,
+    "wrong_kauth_rejected": true,
+    "bound_session_key_device_hex": "293e959b1527eeacf734a3f04d7dcc7d",
+    "bound_session_key_network_hex": "293e959b1527eeacf734a3f04d7dcc7d",
+    "bound_session_key_match": true,
+    "functional_success": true,
+    "payload_bytes_est_without_rssi_probes": 117,
+    "edhoc_toa_ms_est_without_rssi_probes": 251.64799999999997,
+    "rssi_probe_packets_est": 1780,
+    "rssi_probe_toa_ms_est": 146273.28,
+    "total_toa_ms_est_with_rssi_probes": 146524.92799999999
+  }
+}

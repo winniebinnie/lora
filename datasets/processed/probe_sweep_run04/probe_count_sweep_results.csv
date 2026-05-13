@@ -1,0 +1,7 @@
+probe_pairs_total,keygen_pairs,usable_bits,bdr_before_reconciliation,bdr_after_reconciliation,mismatches_after_reconciliation,parity_checks_revealed,post_leakage_min_entropy_bits,enough_for_128bit_target,kauth_match,tag_match,wrong_kauth_rejected,tampered_transcript_rejected,bound_session_key_match,functional_success,total_toa_ms_with_rssi_probes,edhoc_result_folder
+200,98,37,0.0,0.0,0,12,23.57645653085848,False,True,True,True,True,True,True,32793.344,datasets\processed\probe_sweep_run04\edhoc\edhoc_200pairs
+300,196,64,0.0,0.0,0,16,45.15877636105898,False,True,True,True,True,True,True,48899.840000000004,datasets\processed\probe_sweep_run04\edhoc\edhoc_300pairs
+500,394,122,0.0,0.0,0,32,68.30997145573548,False,True,True,True,True,True,True,81441.53600000001,datasets\processed\probe_sweep_run04\edhoc\edhoc_500pairs
+700,591,164,0.006097560975609756,0.0,0,44,77.8261143224716,False,True,True,True,True,True,True,113818.88,datasets\processed\probe_sweep_run04\edhoc\edhoc_700pairs
+900,790,188,0.0,0.0,0,48,78.32581083536968,False,True,True,True,True,True,True,146524.92799999999,datasets\processed\probe_sweep_run04\edhoc\edhoc_900pairs
+987,876,206,0.014563106796116505,0.0,0,52,111.08664935830663,False,True,True,True,True,True,True,160659.19999999998,datasets\processed\probe_sweep_run04\edhoc\edhoc_987pairs
